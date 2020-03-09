@@ -116,6 +116,7 @@ class ogq: public contract {
 	}
 
 	void contract_destroy() {
+        notify_if_failed(check_witness(admin),"checkwitness admin failed");
 		ontio::contract_destroy();
 	}
 };
