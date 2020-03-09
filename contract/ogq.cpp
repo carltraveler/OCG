@@ -51,6 +51,22 @@ class ogq: public contract {
 		}
 	}
 
+	H256 get_root_inner(CompactMerkleTree &ogq_tree) {
+		if (ogq_tree.hashes.size() != 0) {
+			int l = ogq_tree.hashes.size();
+			H256 accum = ogq_tree.hashes[l - 1];
+			for (auto i = l - 2; i >= 0; i --) {
+				ogq_tree.hash_children(ogq_tree.hashes[i], accum, accum);
+			}
+			return accum;
+		} else {
+			H256 res;
+			vector<char> data = {};
+			sha256(data, res);
+			return res;
+		}
+	}
+
     public:
     using contract::contract;
 
@@ -82,35 +98,21 @@ class ogq: public contract {
 		}
 
 		storage_put(merkletree_key, ogq_tree);
-		get_root();
+		auto root = get_root_inner(ogq_tree);
+		notify_event(root, ogq_tree.tree_size);
 	}
 
-	H256 get_root(void) {
+	void get_root(void) {
 		CompactMerkleTree ogq_tree;
 		notify_if_failed(storage_get(merkletree_key, ogq_tree), "get merkletree_key failed");
-
-		if (ogq_tree.hashes.size() != 0) {
-			int l = ogq_tree.hashes.size();
-			H256 accum = ogq_tree.hashes[l - 1];
-			for (auto i = l - 2; i >= 0; i --) {
-				ogq_tree.hash_children(ogq_tree.hashes[i], accum, accum);
-			}
-			notify_event(accum, ogq_tree.tree_size);
-			return accum;
-		} else {
-			H256 res;
-			vector<char> data = {};
-			sha256(data, res);
-			notify_event(res, ogq_tree.tree_size);
-			return res;
-		}
+		auto root = get_root_inner(ogq_tree);
+		notify_event(root, ogq_tree.tree_size);
 	}
 
-	address contract_migrate(vector<char> code) {
+	void contract_migrate(vector<char> code) {
         notify_if_failed(check_witness(admin),"checkwitness admin failed");
 		address t = ontio::contract_migrate(code, 3, "name", "version", "author", "email", "desc");
 		notify_event(t);
-		return t;
 	}
 
 	void contract_destroy() {
