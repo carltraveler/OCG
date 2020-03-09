@@ -82,7 +82,7 @@ class ogq: public contract {
 		}
 
 		storage_put(merkletree_key, ogq_tree);
-		notify_event(hash_list);
+		get_root();
 	}
 
 	H256 get_root(void) {
