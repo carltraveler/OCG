@@ -18,12 +18,12 @@ const (
 	PREFIX_COUNT DataPrefix = 0x2
 )
 
-type OCGMerkle struct {
+type OGQMerkle struct {
 	lStore *leveldbstore.LevelDBStore
 	Tree   *merkle.CompactMerkleTree
 }
 
-func NewTree() (*OCGMerkle, error) {
+func NewTree() (*OGQMerkle, error) {
 	store, err := merkle.NewFileHashStore("merkletree.db", 0)
 	if err != nil {
 		return nil, err
@@ -34,7 +34,7 @@ func NewTree() (*OCGMerkle, error) {
 	if err != nil {
 		return nil, err
 	}
-	tree := &OCGMerkle{
+	tree := &OGQMerkle{
 		lStore: lStore,
 		Tree:   compactMerkleTree,
 	}
@@ -50,7 +50,7 @@ func NewTree() (*OCGMerkle, error) {
 	return tree, nil
 }
 
-func (self *OCGMerkle) putHashIndex(leaf common.Uint256, index uint32) {
+func (self *OGQMerkle) putHashIndex(leaf common.Uint256, index uint32) {
 	keyHash := common.NewZeroCopySink(nil)
 	keyHash.WriteByte(byte(PREFIX_INDEX))
 	keyHash.WriteHash(leaf)
@@ -61,7 +61,7 @@ func (self *OCGMerkle) putHashIndex(leaf common.Uint256, index uint32) {
 	self.lStore.Put(keyHash.Bytes(), val.Bytes())
 }
 
-func (self *OCGMerkle) getLeafIndex(leaf common.Uint256) (uint32, error) {
+func (self *OGQMerkle) getLeafIndex(leaf common.Uint256) (uint32, error) {
 	keyHash := common.NewZeroCopySink(nil)
 	keyHash.WriteByte(byte(PREFIX_INDEX))
 	keyHash.WriteHash(leaf)
@@ -81,7 +81,7 @@ func (self *OCGMerkle) getLeafIndex(leaf common.Uint256) (uint32, error) {
 	return res, nil
 }
 
-func (self *OCGMerkle) updateHashCount(num uint32) {
+func (self *OGQMerkle) updateHashCount(num uint32) {
 	keyCount := common.NewZeroCopySink(nil)
 	keyCount.WriteByte(byte(PREFIX_COUNT))
 	keyCount.WriteHash(merkle.EMPTY_HASH)
@@ -92,7 +92,7 @@ func (self *OCGMerkle) updateHashCount(num uint32) {
 	self.lStore.Put(keyCount.Bytes(), val.Bytes())
 }
 
-func (self *OCGMerkle) getHashCount() (uint32, error) {
+func (self *OGQMerkle) getHashCount() (uint32, error) {
 	keyCount := common.NewZeroCopySink(nil)
 	keyCount.WriteByte(byte(PREFIX_COUNT))
 	keyCount.WriteHash(merkle.EMPTY_HASH)
@@ -112,14 +112,14 @@ func (self *OCGMerkle) getHashCount() (uint32, error) {
 	return res, nil
 }
 
-func (self *OCGMerkle) hashLeaf(data []byte) common.Uint256 {
+func (self *OGQMerkle) hashLeaf(data []byte) common.Uint256 {
 	tmp := append([]byte{0}, data...)
 	return sha256.Sum256(tmp)
 }
 
 // duplicate handle
 // contract failed handle
-func (self *OCGMerkle) BatchAdd(leafv []common.Uint256) error {
+func (self *OGQMerkle) BatchAdd(leafv []common.Uint256) error {
 	currentcount, err := self.getHashCount()
 	if err != nil {
 		return err
@@ -142,7 +142,7 @@ func (self *OCGMerkle) BatchAdd(leafv []common.Uint256) error {
 	return nil
 }
 
-func (self *OCGMerkle) GetProof(leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
+func (self *OGQMerkle) GetProof(leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
 	index, err := self.getLeafIndex(leaf_hash)
 	if err != nil {
 		return nil, err
@@ -151,7 +151,7 @@ func (self *OCGMerkle) GetProof(leaf_hash common.Uint256, treeSize uint32) ([]co
 	return self.Tree.InclusionProof(index, treeSize)
 }
 
-func (self *OCGMerkle) Verify(leaf common.Uint256, root common.Uint256, treeSize uint32) (bool, error) {
+func (self *OGQMerkle) Verify(leaf common.Uint256, root common.Uint256, treeSize uint32) (bool, error) {
 	proof, err := self.GetProof(leaf, treeSize)
 	if err != nil {
 		return false, err
@@ -171,5 +171,6 @@ func (self *OCGMerkle) Verify(leaf common.Uint256, root common.Uint256, treeSize
 }
 
 func main() {
+	// need consider signal like Ctrl+C. need ensure the atomic of Add
 	// need load TreeSize first. if tree already exist.
 }

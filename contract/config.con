@@ -1,0 +1,14 @@
+{
+	"testconfig":[
+		{
+			"contract" : "a.wasm",
+			"testcase": [
+				[{"env":{"witness":["Ad4pjz2bqep4RhQrUAzMuZJkBC3qJ1tZuT"]}, "method":"set_owner", "param":"address:Ab1z3Sxy7ovn4AuScdmMh4PRMvcwCMzSNV"},
+				{"env":{"witness":["Ab1z3Sxy7ovn4AuScdmMh4PRMvcwCMzSNV"]}, "method":"get_root"},
+				{"env":{"witness":["Ab1z3Sxy7ovn4AuScdmMh4PRMvcwCMzSNV"]}, "method":"batch_add", "param":"[bytearray:b413f47d13ee2fe6c845b2ee141af81de858df4ec549a58b7970bb96645bc8d2,bytearray:fcf0a6c700dd13e274b6fba8deea8dd9b26e4eedde3495717cac8408c9c5177f,bytearray:583c7dfb7b3055d99465544032a571e10a134b1b6f769422bbb71fd7fa167a5d,bytearray:4f35212d12f9ad2036492c95f1fe79baf4ec7bd9bef3dffa7579f2293ff546a4,bytearray:9f1afa4dc124cba73134e82ff50f17c8f7164257c79fed9a13f5943a6acb8e3d,bytearray:40d88127d4d31a3891f41598eeed41174e5bc89b1eb9bbd66a8cbfc09956a3fd,bytearray:2ecd8a6b7d2845546659ad4cf443533cf921b19dc81fa83934e83821b4dfdcb7]"},
+				{"env":{"witness":["Ad4pjz2bqep4RhQrUAzMuZJkBC3qJ1tZuT","Ab1z3Sxy7ovn4AuScdmMh4PRMvcwCMzSNV"]}, "method":"get_root"}
+    	    	]
+			]
+		}
+	]
+}
