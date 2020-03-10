@@ -23,11 +23,8 @@ class ogq: public contract {
 
 			tree_size += 1;
 
-			vector<H256> new_hashes;
-			new_hashes.resize(size + 1);
-			std::copy(hashes.begin(), hashes.begin() + size, new_hashes.begin());
-			new_hashes[size] = leaf;
-			hashes = new_hashes;
+			hashes.resize(size + 1);
+			hashes[size] = leaf;
 		}
 
 		void hash_children(const H256 &left, const H256 &right, H256 &res) {
