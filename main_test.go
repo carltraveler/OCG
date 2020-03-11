@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"github.com/ontio/ontology/common"
@@ -8,7 +9,13 @@ import (
 
 func TestVerifySubTreeLeaf(t *testing.T) {
 	// need load TreeSize first. if tree already exist.
-	ogqTree, err := NewTree()
+	defer clean()
+	clean()
+
+	os.RemoveAll(levelDBName)
+	os.RemoveAll(fileHashStoreName)
+
+	err := InitCompactMerkleTree()
 	if err != nil {
 		t.Fatalf("%s", err)
 		return
@@ -16,27 +23,34 @@ func TestVerifySubTreeLeaf(t *testing.T) {
 
 	sink := common.NewZeroCopySink(nil)
 
-	N := uint32(1000)
+	N := uint32(10)
 	hashes := make([]common.Uint256, N, N)
 	root := make([]common.Uint256, N, N)
 	for i := uint32(0); i < N; i++ {
 		sink.Reset()
 		sink.WriteUint32(i)
-		hashes[i] = ogqTree.hashLeaf(sink.Bytes())
-		ogqTree.BatchAdd(hashes[i : i+1])
+		hashes[i] = hashLeaf(sink.Bytes())
+		BatchAdd(DefMerkleTree, DefStore, hashes[i:i+1])
 		if err != nil {
 			t.Fatalf("%s", err)
 		}
-		root[i] = ogqTree.Tree.Root()
+		root[i] = DefMerkleTree.Root()
 	}
 
 	for i := uint32(0); i < N; i++ {
 		sink.Reset()
 		sink.WriteUint32(i)
-		leaf := ogqTree.hashLeaf(sink.Bytes())
-		exist, err := ogqTree.Verify(leaf, root[i], i+1)
-		if !exist || err != nil {
+		leaf := hashLeaf(sink.Bytes())
+		exist, err := Verify(DefMerkleTree, DefStore, leaf, root[i], i+1)
+		if !exist {
 			t.Fatalf("Element %d verify failed: %s\n", i, err)
+		}
+
+		for k := uint32(i); k < N; k++ {
+			exist, err = Verify(DefMerkleTree, DefStore, leaf, root[k], k+1)
+			if !exist {
+				t.Fatalf("Element %d verify failed: %s\n", i, err)
+			}
 		}
 	}
 }
