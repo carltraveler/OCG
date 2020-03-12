@@ -39,7 +39,7 @@ class ogq: public contract {
 
     key owner_key = make_key("owner_key");
 	key merkletree_key = make_key("merkletree_key");
-	address admin = base58toaddress("Ad4pjz2bqep4RhQrUAzMuZJkBC3qJ1tZuT");
+	address admin = base58toaddress("APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2");
 
 	void notify_if_failed(bool cond, const char *msg) {
 		if (not cond) {
@@ -76,7 +76,7 @@ class ogq: public contract {
         return true;
     }
 
-	void batch_add(vector<vector<char>> hash_list) {
+	void batch_add2(vector<vector<char>> hash_list) {
 		address owner;
         notify_if_failed(storage_get(owner_key ,owner), "owner not set");
         notify_if_failed(check_witness(owner),"checkwitness owner failed");
@@ -99,6 +99,27 @@ class ogq: public contract {
 		notify_event(root, ogq_tree.tree_size);
 	}
 
+	void batch_add(vector<H256> hash_list) {
+		address owner;
+        notify_if_failed(storage_get(owner_key ,owner), "owner not set");
+        notify_if_failed(check_witness(owner),"checkwitness owner failed");
+		if (hash_list.size() == 0) {
+			return;
+		}
+
+		CompactMerkleTree ogq_tree;
+		notify_if_failed(storage_get(merkletree_key, ogq_tree), "get merkletree_key failed");
+		
+		for (auto h: hash_list) {
+			ogq_tree.append_hash(h);
+		}
+
+		storage_put(merkletree_key, ogq_tree);
+		auto root = get_root_inner(ogq_tree);
+		notify_event(root, ogq_tree.tree_size);
+	}
+
+
 	void get_root(void) {
 		CompactMerkleTree ogq_tree;
 		notify_if_failed(storage_get(merkletree_key, ogq_tree), "get merkletree_key failed");
@@ -118,4 +139,4 @@ class ogq: public contract {
 	}
 };
 
-ONTIO_DISPATCH(ogq, (set_owner)(batch_add)(get_root)(contract_migrate)(contract_destroy))
+ONTIO_DISPATCH(ogq, (set_owner)(batch_add)(batch_add2)(get_root)(contract_migrate)(contract_destroy))
