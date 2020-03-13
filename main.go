@@ -184,12 +184,13 @@ func InitCompactMerkleTree() error {
 	}
 
 	raw, err := DefStore.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
-	if err != nil {
+	if err == nil {
 		TxStore.UnMarshal(raw)
 	}
 
 	DefSdk = sdk.NewOntologySdk()
 	DefSdk.NewRpcClient().SetAddress(ontNode)
+
 	go TxStoreTimeChecker(DefSdk, DefMerkleTree, DefStore)
 	return nil
 }
@@ -426,15 +427,8 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 	for {
 		time.Sleep(time.Second * 30)
 		log.Debugf("TimerChecker running")
-		MTlock.Lock()
-		raw, err := store.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
-		if err != nil {
-			log.Debugf("TxStore hash empty")
-			MTlock.Unlock()
-			continue
-		}
 
-		TxStore.UnMarshal(raw)
+		MTlock.Lock()
 
 		for k, _ := range TxStore.Txhashes {
 			//sink.WriteHash(k)
