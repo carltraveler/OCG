@@ -115,6 +115,8 @@ func (self *TransactionStore) UpdateSelfToStore() {
 
 	if len(sink.Bytes()) != 0 {
 		DefStore.Put(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH), sink.Bytes())
+	} else {
+		DefStore.Delete(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
 	}
 }
 
@@ -422,23 +424,23 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 
 func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore) {
 	for {
+		time.Sleep(time.Second * 30)
 		log.Debugf("TimerChecker running")
-
 		MTlock.Lock()
-
 		raw, err := store.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
 		if err != nil {
 			log.Debugf("TxStore hash empty")
 			MTlock.Unlock()
 			continue
 		}
+
 		TxStore.UnMarshal(raw)
 
 		for k, _ := range TxStore.Txhashes {
 			//sink.WriteHash(k)
 			tx, err := TxStore.GetTxFromStore(k)
 			if err != nil {
-				log.Errorf("TimerChecker: impossible get tx error. %s", err)
+				log.Errorf("TimerChecker: txhash: %x,impossible get tx error. %s", k, err)
 				MTlock.Unlock()
 				return
 			}
@@ -456,7 +458,6 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 			go addLeafsToStorage(ontSdk, cMtree, store, leafv, tx)
 		}
 		MTlock.Unlock()
-		time.Sleep(time.Second * 30)
 	}
 }
 
