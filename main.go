@@ -51,10 +51,12 @@ var (
 )
 
 const (
-	walletname     string = "./wallet.dat"
-	walletpassword string = "123456"
-	ontNode        string = "http://localhost:20336"
-	signerAddress  string = "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"
+	walletname      string = "./wallet.dat"
+	walletpassword  string = "123456"
+	ontNode         string = "http://localhost:20336"
+	signerAddress   string = "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"
+	serverPort      int    = 32339
+	contracthexAddr string = "8ce5b4c91f89aa72662d5fa9db5ee642b57dfd05"
 )
 
 const (
@@ -173,7 +175,7 @@ func InitCompactMerkleTree() error {
 	MTlock = new(sync.RWMutex)
 	Existlock = new(sync.Mutex)
 
-	contractAddress, err = common.AddressFromHexString("8ce5b4c91f89aa72662d5fa9db5ee642b57dfd05")
+	contractAddress, err = common.AddressFromHexString(contracthexAddr)
 	if err != nil {
 		return err
 	}
@@ -657,7 +659,7 @@ func StartRPCServer() error {
 	rpc.HandleFunc("verify", rpcVerify)
 	rpc.HandleFunc("batch_add", rpcBatchAdd)
 
-	err := http.ListenAndServe(":"+strconv.Itoa(int(32339)), nil)
+	err := http.ListenAndServe(":"+strconv.Itoa(serverPort), nil)
 	if err != nil {
 		return fmt.Errorf("ListenAndServe error:%s", err)
 	}
