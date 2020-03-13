@@ -105,17 +105,20 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params []interface{}) 
 func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
+	N := uint32(1)
 
-	if true {
-		addargs := GenerateAddArgs()
-		res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addargs})
-		if err != nil {
-			fmt.Printf("%s\n", err)
-			return
+	for i := uint32(0); i < 100; i += N {
+		if true {
+			addargs := GenerateAddArgs(i, N)
+			res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addargs})
+			if err != nil {
+				fmt.Printf("%s\n", err)
+				return
+			}
+			msg := string(res)
+			fmt.Printf("%s\n", msg)
+
 		}
-		msg := string(res)
-		fmt.Printf("%s\n", msg)
-
 	}
 
 	if false {
@@ -137,7 +140,7 @@ func hashLeaf(data []byte) common.Uint256 {
 	return sha256.Sum256(tmp)
 }
 
-func GenerateAddArgs() string {
+func GenerateAddArgs(start uint32, N uint32) string {
 	//N := uint32(3)
 	//leafs := make([]common.Uint256, 0)
 	//for i := uint32(1); i <= N; i++ {
@@ -145,8 +148,8 @@ func GenerateAddArgs() string {
 	//	leafs = append(leafs, hashLeaf([]byte{x}))
 	//}
 
-	N := uint32(2)
-	start := uint32(1)
+	//N := uint32(2)
+	//start := uint32(1)
 	leafs := make([]common.Uint256, 0)
 	for i := uint32(start); i < start+N; i++ {
 		x := byte(i)

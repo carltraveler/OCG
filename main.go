@@ -46,6 +46,7 @@ const (
 	levelDBName       string = "leveldb"
 	fileHashStoreName string = "filestore.db"
 	BATCHNUM          uint32 = 512
+	TxchCap           uint32 = 500000
 )
 
 var (
@@ -143,6 +144,11 @@ func (self *TransactionStore) UnMarshal(raw []byte) {
 	}
 }
 
+type transferArg struct {
+	leafv []common.Uint256
+	tx    *types.MutableTransaction
+}
+
 var (
 	DefStore      *leveldbstore.LevelDBStore
 	DefMerkleTree *merkle.CompactMerkleTree
@@ -153,6 +159,8 @@ var (
 	wg            sync.WaitGroup
 	DefConfig     ServerConfig
 	DefSigner     sdk.Signer
+	txch          = make(chan transferArg, TxchCap)
+	exitch        = make(chan bool)
 )
 
 func GetKeyByHash(prefix DataPrefix, h common.Uint256) []byte {
@@ -218,7 +226,10 @@ func InitCompactMerkleTree() error {
 	DefSdk = sdk.NewOntologySdk()
 	DefSdk.NewRpcClient().SetAddress(DefConfig.OntNode)
 
-	go TxStoreTimeChecker(DefSdk, DefMerkleTree, DefStore)
+	var batchstore leveldbstore.LevelDBStore
+	batchstore = *DefStore
+
+	go TxStoreTimeChecker(DefSdk, DefMerkleTree, batchstore)
 	return nil
 }
 
@@ -372,7 +383,7 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 
 // duplicate handle
 // contract failed handle
-func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leafv []common.Uint256) error {
+func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
 	Existlock.Lock()
 	defer Existlock.Unlock()
 	wg.Add(1)
@@ -386,7 +397,7 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 
 	// check duplicate. and construct transaction.
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		_, err := getLeafIndex(store, leafv[i])
+		_, err := getLeafIndex(&store, leafv[i])
 		if err == nil {
 			return errors.New("duplicate hash leafs. please check.")
 		}
@@ -397,7 +408,7 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 		return err
 	}
 
-	err = TxStore.AppendTxToStore(tx, store)
+	err = TxStore.AppendTxToStore(tx, &store)
 	if err != nil {
 		return err
 	}
@@ -405,7 +416,7 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		// here use index marked as exist. the right index will put later.
 		log.Debugf("BatchAdd leaf[%d]: %x\n", i, leafv[i])
-		putLeafIndex(store, leafv[i], math.MaxUint32)
+		putLeafIndex(&store, leafv[i], math.MaxUint32)
 	}
 
 	err = store.BatchCommit()
@@ -414,10 +425,16 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 	}
 
 	// here batch. so be carefull of multi routing issue with newbatch
-	var newstore leveldbstore.LevelDBStore
-	newstore = *store
+	//var newstore leveldbstore.LevelDBStore
+	//newstore = store
 
-	go addLeafsToStorage(DefSdk, cMtree, &newstore, leafv, tx)
+	arg := transferArg{
+		leafv: leafv,
+		tx:    tx,
+	}
+
+	txch <- arg
+	//go addLeafsToStorage(DefSdk, cMtree, newstore, leafv, tx)
 
 	return nil
 }
@@ -454,16 +471,20 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 	return res, nil
 }
 
-func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore) {
+func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore) {
 	for {
-		time.Sleep(time.Second * 30)
 		log.Debugf("TimerChecker running")
+		time.Sleep(time.Second * 30)
+		if len(txch) != 0 {
+			log.Debugf("TimerChecker txch len %d", len(txch))
+			continue
+		}
 
 		MTlock.Lock()
 
 		for k, _ := range TxStore.Txhashes {
 			//sink.WriteHash(k)
-			tx, err := TxStore.GetTxFromStore(k, store)
+			tx, err := TxStore.GetTxFromStore(k, &store)
 			if err != nil {
 				log.Errorf("TimerChecker: txhash: %x,impossible get tx error. %s", k, err)
 				MTlock.Unlock()
@@ -480,13 +501,39 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 				log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
 			}
 
-			go addLeafsToStorage(ontSdk, cMtree, store, leafv, tx)
+			//var batchstore leveldbstore.LevelDBStore
+			//batchstore = store
+			//go addLeafsToStorage(ontSdk, cMtree, batchstore, leafv, tx)
+
+			arg := transferArg{
+				leafv: leafv,
+				tx:    tx,
+			}
+
+			txch <- arg
 		}
 		MTlock.Unlock()
+
 	}
 }
 
-func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
+func handleStoreRequest() {
+	for {
+		select {
+		case quit := <-exitch:
+			if quit {
+				log.Info("received quit signal %d", quit)
+				return
+			}
+		case arg := <-txch:
+			var batchstore leveldbstore.LevelDBStore
+			batchstore = *DefStore
+			addLeafsToStorage(DefSdk, DefMerkleTree, batchstore, arg.leafv, arg.tx)
+		}
+	}
+}
+
+func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
 	MTlock.Lock()
 	defer MTlock.Unlock()
 	wg.Add(1)
@@ -494,7 +541,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 	store.NewBatch()
 
 	// check already handled by another gorouting
-	index, err := getLeafIndex(store, leafv[0])
+	index, err := getLeafIndex(&store, leafv[0])
 	if index != math.MaxUint32 {
 		return
 	}
@@ -536,15 +583,13 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 	// than mark the tx resolved. once tx mark resolved. cMtree must store to local.
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		// update index. zero based.
-		putLeafIndex(store, leafv[i], cMtree.TreeSize()-1)
+		putLeafIndex(&store, leafv[i], cMtree.TreeSize()-1)
 	}
 
-	log.Debugf("root: %x, treeSize: %d", cMtree.Root(), cMtree.TreeSize())
-
 	// transaction success
-	TxStore.DeleteTxStore(tx.Hash(), store)
-	TxStore.UpdateSelfToStore(store)
-	SaveCompactMerkleTree(cMtree, store)
+	TxStore.DeleteTxStore(tx.Hash(), &store)
+	TxStore.UpdateSelfToStore(&store)
+	SaveCompactMerkleTree(cMtree, &store)
 	err = store.BatchCommit()
 	if err != nil {
 		panic(err)
@@ -553,6 +598,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		cMtree.AppendHash(leafv[i])
 	}
+	log.Debugf("root: %x, treeSize: %d", cMtree.Root(), cMtree.TreeSize())
 }
 
 func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
@@ -692,6 +738,8 @@ func startOGQServer(ctx *cli.Context) error {
 		return err
 	}
 
+	go handleStoreRequest()
+
 	waitToExit(ctx)
 
 	return nil
@@ -809,8 +857,10 @@ func rpcBatchAdd(params []interface{}) map[string]interface{} {
 		hashes = append(hashes, leaf)
 	}
 
+	var batchstore leveldbstore.LevelDBStore
+	batchstore = *DefStore
 	// can not partial add. chain will not save to storage if contract exec failed.
-	ok := BatchAdd(DefMerkleTree, DefStore, hashes)
+	ok := BatchAdd(DefMerkleTree, batchstore, hashes)
 	if ok != nil {
 		log.Debugf("batch add failed %s\n", ok)
 		return responsePack(ADDHASH_FAILED, "")
@@ -839,16 +889,22 @@ func waitToExit(ctx *cli.Context) {
 	go func() {
 		for sig := range sc {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
+			exitch <- true
+
 			wg.Wait()
 			log.Info("Now exit")
+
 			MTlock.Lock()
-			DefStore.NewBatch()
-			SaveCompactMerkleTree(DefMerkleTree, DefStore)
-			TxStore.UpdateSelfToStore(DefStore)
-			err := DefStore.BatchCommit()
+			var batchstore leveldbstore.LevelDBStore
+			batchstore = *DefStore
+			batchstore.NewBatch()
+			SaveCompactMerkleTree(DefMerkleTree, &batchstore)
+			TxStore.UpdateSelfToStore(&batchstore)
+			err := batchstore.BatchCommit()
 			if err != nil {
 				log.Errorf("%s", err)
 			}
+			log.Info("save data ok")
 			MTlock.Unlock()
 
 			DefStore.Close()
