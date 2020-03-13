@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,11 +21,13 @@ import (
 	"github.com/ontio/ontology/cmd/utils"
 	"github.com/ontio/ontology/common"
 	"github.com/ontio/ontology/common/log"
+	"github.com/ontio/ontology/core/payload"
 	"github.com/ontio/ontology/core/store/leveldbstore"
 	"github.com/ontio/ontology/core/types"
 	utils2 "github.com/ontio/ontology/core/utils"
 	"github.com/ontio/ontology/http/base/rpc"
 	"github.com/ontio/ontology/merkle"
+	"github.com/ontio/ontology/smartcontract/states"
 	"github.com/urfave/cli"
 )
 
@@ -68,7 +71,7 @@ var ErrMap = map[int64]string{
 
 type TransactionStore struct {
 	lock     sync.Mutex
-	txhashes map[common.Uint256]bool
+	Txhashes map[common.Uint256]bool
 	store    *leveldbstore.LevelDBStore
 }
 
@@ -79,14 +82,26 @@ func (self *TransactionStore) AppendTxToStore(tx *types.MutableTransaction) erro
 	if err != nil {
 		return err
 	}
-	self.txhashes[tx.Hash()] = true
+	self.Txhashes[tx.Hash()] = true
 	return nil
+}
+
+func (self *TransactionStore) GetTxFromStore(txh common.Uint256) (*types.MutableTransaction, error) {
+	self.lock.Lock()
+	defer self.lock.Unlock()
+
+	tx, err := getTransaction(self.store, txh)
+	if err != nil {
+		return nil, err
+	}
+
+	return tx, nil
 }
 
 func (self *TransactionStore) DeleteTxStore(h common.Uint256) {
 	self.lock.Lock()
 	defer self.lock.Unlock()
-	delete(self.txhashes, h)
+	delete(self.Txhashes, h)
 	delTransaction(self.store, h)
 }
 
@@ -94,12 +109,12 @@ func (self *TransactionStore) UpdateSelfToStore() {
 	self.lock.Lock()
 	defer self.lock.Unlock()
 	sink := common.NewZeroCopySink(nil)
-	for k, _ := range self.txhashes {
+	for k, _ := range self.Txhashes {
 		sink.WriteHash(k)
 	}
 
 	if len(sink.Bytes()) != 0 {
-		self.store.Put(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH), sink.Bytes())
+		DefStore.Put(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH), sink.Bytes())
 	}
 }
 
@@ -110,17 +125,18 @@ func (self *TransactionStore) UnMarshal(raw []byte) {
 		if eof {
 			break
 		}
-		self.txhashes[h] = true
+		self.Txhashes[h] = true
 	}
 }
 
 var (
 	DefStore      *leveldbstore.LevelDBStore
 	DefMerkleTree *merkle.CompactMerkleTree
+	DefSdk        *sdk.OntologySdk
 	MTlock        *sync.RWMutex
 	Existlock     *sync.Mutex
 	TxStore       *TransactionStore
-	wg            *sync.WaitGroup
+	wg            sync.WaitGroup
 )
 
 func GetKeyByHash(prefix DataPrefix, h common.Uint256) []byte {
@@ -160,11 +176,19 @@ func InitCompactMerkleTree() error {
 		return err
 	}
 
-	TxStore = &TransactionStore{store: DefStore}
+	TxStore = &TransactionStore{
+		Txhashes: make(map[common.Uint256]bool),
+		store:    DefStore,
+	}
+
 	raw, err := DefStore.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
 	if err != nil {
 		TxStore.UnMarshal(raw)
 	}
+
+	DefSdk = sdk.NewOntologySdk()
+	DefSdk.NewRpcClient().SetAddress(ontNode)
+	go TxStoreTimeChecker(DefSdk, DefMerkleTree, DefStore)
 	return nil
 }
 
@@ -240,7 +264,6 @@ func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*type
 		return nil, fmt.Errorf("too much elemet. most %d.", BATCHNUM)
 	}
 
-	ontSdk.NewRpcClient().SetAddress(ontNode)
 	wallet, err := ontSdk.OpenWallet(walletname)
 	if err != nil {
 		return nil, fmt.Errorf("error in OpenWallet:%s\n", err)
@@ -348,8 +371,7 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 		}
 	}
 
-	ontSdk := sdk.NewOntologySdk()
-	tx, err := constructTransation(ontSdk, leafv)
+	tx, err := constructTransation(DefSdk, leafv)
 	if err != nil {
 		return err
 	}
@@ -361,12 +383,81 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		// here use index marked as exist. the right index will put later.
-		putLeafIndex(store, leafv[i], 0)
+		log.Debugf("BatchAdd leaf[%d]: %x\n", i, leafv[i])
+		putLeafIndex(store, leafv[i], math.MaxUint32)
 	}
 
-	go addLeafsToStorage(ontSdk, cMtree, store, leafv, tx)
+	go addLeafsToStorage(DefSdk, cMtree, store, leafv, tx)
 
 	return nil
+}
+
+func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
+	source := common.NewZeroCopySource(tx.Payload.(*payload.InvokeCode).Code)
+	contract := &states.WasmContractParam{}
+	err := contract.Deserialization(source)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := contract.Args
+	sourceh := common.NewZeroCopySource(raw)
+	method, _, irregular, eof := sourceh.NextString()
+	argsNum, _, irregular, eof := sourceh.NextVarUint()
+	if irregular || eof || method != "batch_add" || argsNum != uint64(1) {
+		return nil, errors.New("leafvFromTx error")
+	}
+
+	res := make([]common.Uint256, 0)
+	for {
+		h, eof := sourceh.NextHash()
+		if eof {
+			break
+		}
+		res = append(res, h)
+	}
+
+	return res, nil
+}
+
+func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore) {
+	for {
+		log.Debugf("TimerChecker running")
+
+		MTlock.Lock()
+
+		raw, err := store.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
+		if err != nil {
+			log.Debugf("TxStore hash empty")
+			MTlock.Unlock()
+			continue
+		}
+		TxStore.UnMarshal(raw)
+
+		for k, _ := range TxStore.Txhashes {
+			//sink.WriteHash(k)
+			tx, err := TxStore.GetTxFromStore(k)
+			if err != nil {
+				log.Errorf("TimerChecker: impossible get tx error. %s", err)
+				MTlock.Unlock()
+				return
+			}
+			leafv, err := leafvFromTx(tx)
+			if err != nil {
+				log.Errorf("TimerChecker: impossible get leafv error. %s", err)
+				MTlock.Unlock()
+				return
+			}
+
+			for i := range leafv {
+				log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
+			}
+
+			go addLeafsToStorage(ontSdk, cMtree, store, leafv, tx)
+		}
+		MTlock.Unlock()
+		time.Sleep(time.Second * 30)
+	}
 }
 
 func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
@@ -375,23 +466,32 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 	wg.Add(1)
 	defer wg.Done()
 
+	// check already handled by another gorouting
+	index, err := getLeafIndex(store, leafv[0])
+	if index != math.MaxUint32 {
+		return
+	}
+
+	for i := uint32(0); i < uint32(len(leafv)); i++ {
+		log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
+	}
+
 	callCount := 0
+	var newroot common.Uint256
+	var treeSize uint32
 
 	// must the same seq with contract. so here use lock to ensure atomic.
 	for {
-		newroot, treeSize, err := invokeWasmContract(ontSdk, tx)
+		newroot, treeSize, err = invokeWasmContract(ontSdk, tx)
 		callCount++
 		if err != nil {
 			if callCount > 3 {
+				log.Debugf("call contract failed %s", err)
 				return
 			}
-			// loop to handle here
 			continue
 		}
 
-		if newroot != cMtree.Root() || treeSize != cMtree.TreeSize() {
-			panic("root not consistence. database wrong")
-		}
 		break
 	}
 
@@ -401,6 +501,12 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 		// update index. zero based.
 		putLeafIndex(store, leafv[i], cMtree.TreeSize()-1)
 	}
+
+	if newroot != cMtree.Root() || treeSize != cMtree.TreeSize() {
+		panic(fmt.Errorf("chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, cMtree.Root(), treeSize, cMtree.TreeSize()))
+	}
+
+	log.Debugf("root: %x, treeSize: %d", cMtree.Root(), cMtree.TreeSize())
 
 	// transaction success
 	TxStore.DeleteTxStore(tx.Hash())
@@ -644,8 +750,6 @@ func rpcBatchAdd(params []interface{}) map[string]interface{} {
 		return responsePack(ADDHASH_FAILED, "")
 	}
 
-	log.Infof("batch added %d hash. after add merkle root:%x, TreeSize %d\n", len(hashes), DefMerkleTree.Root(), DefMerkleTree.TreeSize())
-
 	return responseSuccess("Add Success")
 }
 
@@ -670,6 +774,7 @@ func waitToExit(ctx *cli.Context) {
 		for sig := range sc {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
 			wg.Wait()
+			log.Info("Now exit")
 			SaveCompactMerkleTree(DefMerkleTree, DefStore)
 			TxStore.UpdateSelfToStore()
 			close(exit)

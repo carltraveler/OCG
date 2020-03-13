@@ -106,24 +106,28 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 
-	//addargs := GenerateAddArgs()
-	//res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addargs})
-	//if err != nil {
-	//	fmt.Printf("%s\n", err)
-	//	return
-	//}
-	//msg := string(res)
-	//fmt.Printf("%s\n", msg)
+	if true {
+		addargs := GenerateAddArgs()
+		res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addargs})
+		if err != nil {
+			fmt.Printf("%s\n", err)
+			return
+		}
+		msg := string(res)
+		fmt.Printf("%s\n", msg)
 
-	verifyargs := GenerateVerifyArgs()
-	//res, err := client.sendRpcRequest(client.GetNextQid(), "verify", []interface{}{verifyargs})
-	res, err := client.sendRpcRequest(client.GetNextQid(), "verify", []interface{}{verifyargs})
-	if err != nil {
-		fmt.Printf("%s\n", err)
-		return
 	}
-	msg := string(res)
-	fmt.Printf("%s\n", msg)
+
+	if false {
+		verifyargs := GenerateVerifyArgs()
+		res, err := client.sendRpcRequest(client.GetNextQid(), "verify", []interface{}{verifyargs})
+		if err != nil {
+			fmt.Printf("%s\n", err)
+			return
+		}
+		msg := string(res)
+		fmt.Printf("%s\n", msg)
+	}
 
 	clean()
 }
@@ -134,9 +138,17 @@ func hashLeaf(data []byte) common.Uint256 {
 }
 
 func GenerateAddArgs() string {
-	N := uint32(3)
+	//N := uint32(3)
+	//leafs := make([]common.Uint256, 0)
+	//for i := uint32(1); i <= N; i++ {
+	//	x := byte(i)
+	//	leafs = append(leafs, hashLeaf([]byte{x}))
+	//}
+
+	N := uint32(1)
+	start := uint32(8)
 	leafs := make([]common.Uint256, 0)
-	for i := uint32(1); i <= N; i++ {
+	for i := uint32(start); i < start+N; i++ {
 		x := byte(i)
 		leafs = append(leafs, hashLeaf([]byte{x}))
 	}
@@ -165,7 +177,7 @@ func GenerateAddArgs() string {
 }
 
 func GenerateVerifyArgs() string {
-	N := uint32(3)
+	N := uint32(2)
 	leafs := make([]common.Uint256, 0)
 	for i := uint32(1); i <= N; i++ {
 		x := byte(i)
