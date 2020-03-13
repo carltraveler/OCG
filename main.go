@@ -406,9 +406,9 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 	raw := contract.Args
 	sourceh := common.NewZeroCopySource(raw)
 	method, _, irregular, eof := sourceh.NextString()
-	argsNum, _, irregular, eof := sourceh.NextVarUint()
-	if irregular || eof || method != "batch_add" || argsNum != uint64(1) {
-		return nil, errors.New("leafvFromTx error")
+	argsNum, _, irregular, eof := sourceh.NextVarUint() // argNum is leaf vector len.
+	if irregular || eof || method != "batch_add" {
+		return nil, fmt.Errorf("leafvFromTx error irregular: %d, eof : %d, method: %s, argsNum: %d", irregular, eof, method, argsNum)
 	}
 
 	res := make([]common.Uint256, 0)
@@ -418,6 +418,10 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 			break
 		}
 		res = append(res, h)
+	}
+
+	if int(argsNum) != len(res) {
+		return nil, fmt.Errorf("argsNum error: require %d, acctual %d", int(argsNum), len(res))
 	}
 
 	return res, nil

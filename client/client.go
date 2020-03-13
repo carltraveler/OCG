@@ -145,8 +145,8 @@ func GenerateAddArgs() string {
 	//	leafs = append(leafs, hashLeaf([]byte{x}))
 	//}
 
-	N := uint32(1)
-	start := uint32(8)
+	N := uint32(10)
+	start := uint32(11)
 	leafs := make([]common.Uint256, 0)
 	for i := uint32(start); i < start+N; i++ {
 		x := byte(i)
