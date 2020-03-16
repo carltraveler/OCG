@@ -424,17 +424,15 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore,
 		return err
 	}
 
-	// here batch. so be carefull of multi routing issue with newbatch
-	//var newstore leveldbstore.LevelDBStore
-	//newstore = store
-
 	arg := transferArg{
 		leafv: leafv,
 		tx:    tx,
 	}
 
-	txch <- arg
-	//go addLeafsToStorage(DefSdk, cMtree, newstore, leafv, tx)
+	if uint32(len(txch)) < TxchCap/10 {
+		log.Debugf("TimerChecker txch len %d", len(txch))
+		txch <- arg
+	}
 
 	return nil
 }
@@ -483,7 +481,6 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 		MTlock.Lock()
 
 		for k, _ := range TxStore.Txhashes {
-			//sink.WriteHash(k)
 			tx, err := TxStore.GetTxFromStore(k, &store)
 			if err != nil {
 				log.Errorf("TimerChecker: txhash: %x,impossible get tx error. %s", k, err)
@@ -500,10 +497,6 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 			for i := range leafv {
 				log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
 			}
-
-			//var batchstore leveldbstore.LevelDBStore
-			//batchstore = store
-			//go addLeafsToStorage(ontSdk, cMtree, batchstore, leafv, tx)
 
 			arg := transferArg{
 				leafv: leafv,
