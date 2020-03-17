@@ -134,6 +134,9 @@ func (self *TransactionStore) UpdateSelfToStore(store *leveldbstore.LevelDBStore
 }
 
 func (self *TransactionStore) UnMarshal(raw []byte) {
+	self.lock.Lock()
+	defer self.lock.Unlock()
+
 	source := common.NewZeroCopySource(raw)
 	for {
 		h, eof := source.NextHash()
@@ -413,6 +416,8 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore,
 		return err
 	}
 
+	TxStore.UpdateSelfToStore(&store)
+
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		// here use index marked as exist. the right index will put later.
 		log.Debugf("BatchAdd leaf[%d]: %x\n", i, leafv[i])
@@ -479,17 +484,19 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 		}
 
 		MTlock.Lock()
-
+		Existlock.Lock()
 		for k, _ := range TxStore.Txhashes {
 			tx, err := TxStore.GetTxFromStore(k, &store)
 			if err != nil {
 				log.Errorf("TimerChecker: txhash: %x,impossible get tx error. %s", k, err)
+				Existlock.Unlock()
 				MTlock.Unlock()
 				return
 			}
 			leafv, err := leafvFromTx(tx)
 			if err != nil {
 				log.Errorf("TimerChecker: impossible get leafv error. %s", err)
+				Existlock.Unlock()
 				MTlock.Unlock()
 				return
 			}
@@ -505,6 +512,7 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 
 			txch <- arg
 		}
+		Existlock.Unlock()
 		MTlock.Unlock()
 
 	}
