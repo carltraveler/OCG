@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"reflect"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"syscall"
@@ -45,8 +46,8 @@ const (
 const (
 	levelDBName       string = "leveldb"
 	fileHashStoreName string = "filestore.db"
-	BATCHNUM          uint32 = 512
-	TxchCap           uint32 = 500000
+	BATCHNUM          uint32 = 1024
+	TxchCap           uint32 = 5000
 )
 
 var (
@@ -75,12 +76,14 @@ const (
 	SUCCESS        int64 = 0
 	INVALID_PARAM  int64 = 41001
 	ADDHASH_FAILED int64 = 41002
+	VERIFY_FAILED  int64 = 41003
 )
 
 var ErrMap = map[int64]string{
 	SUCCESS:        "SUCCESS",
 	INVALID_PARAM:  "INVALID_PARAM",
 	ADDHASH_FAILED: "ADDHASH_FAILED",
+	VERIFY_FAILED:  "VERIFY_FAILED",
 }
 
 type TransactionStore struct {
@@ -158,6 +161,7 @@ var (
 	DefSdk        *sdk.OntologySdk
 	MTlock        *sync.RWMutex
 	Existlock     *sync.Mutex
+	FileHashStore merkle.HashStore
 	TxStore       *TransactionStore
 	wg            sync.WaitGroup
 	DefConfig     ServerConfig
@@ -207,6 +211,7 @@ func InitCompactMerkleTree() error {
 	if err != nil {
 		return err
 	}
+	FileHashStore = store
 
 	DefMerkleTree = merkle.NewTree(cMTree.TreeSize(), cMTree.Hashes(), store)
 	MTlock = new(sync.RWMutex)
@@ -232,7 +237,7 @@ func InitCompactMerkleTree() error {
 	var batchstore leveldbstore.LevelDBStore
 	batchstore = *DefStore
 
-	go TxStoreTimeChecker(DefSdk, DefMerkleTree, batchstore)
+	go TxStoreTimeChecker(DefSdk, batchstore)
 	return nil
 }
 
@@ -332,7 +337,7 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 		return merkle.EMPTY_HASH, 0, fmt.Errorf("send tx failed: %s", err)
 	}
 
-	log.Debugf("tx hash : %s", txHash.ToHexString())
+	log.Infof("tx hash : %s", txHash.ToHexString())
 
 	_, err = ontSdk.WaitForGenerateBlock(30 * time.Second)
 	if err != nil {
@@ -379,14 +384,14 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 		log.Debugf("%+v\n", notify)
 	}
 
-	log.Debugf("newroot: %x, treeSize: %d\n", newroot, treeSize)
+	log.Infof("newroot: %x, treeSize: %d\n", newroot, treeSize)
 
 	return newroot, treeSize, nil
 }
 
 // duplicate handle
 // contract failed handle
-func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
+func BatchAdd(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
 	Existlock.Lock()
 	defer Existlock.Unlock()
 	wg.Add(1)
@@ -404,6 +409,8 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore,
 		if err == nil {
 			return errors.New("duplicate hash leafs. please check.")
 		}
+		// batch will protect like roll back if failed
+		putLeafIndex(&store, leafv[i], math.MaxUint32)
 	}
 
 	tx, err := constructTransation(DefSdk, leafv)
@@ -418,12 +425,6 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore,
 
 	TxStore.UpdateSelfToStore(&store)
 
-	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		// here use index marked as exist. the right index will put later.
-		log.Debugf("BatchAdd leaf[%d]: %x\n", i, leafv[i])
-		putLeafIndex(&store, leafv[i], math.MaxUint32)
-	}
-
 	err = store.BatchCommit()
 	if err != nil {
 		return err
@@ -434,8 +435,8 @@ func BatchAdd(cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore,
 		tx:    tx,
 	}
 
-	if uint32(len(txch)) < TxchCap/10 {
-		log.Debugf("TimerChecker txch len %d", len(txch))
+	if uint32(len(txch)) < TxchCap/2 {
+		log.Infof("TimerChecker txch len %d", len(txch))
 		txch <- arg
 	}
 
@@ -474,12 +475,12 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 	return res, nil
 }
 
-func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore) {
+func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore) {
 	for {
-		log.Debugf("TimerChecker running")
+		log.Infof("TimerChecker running")
 		time.Sleep(time.Second * 30)
 		if len(txch) != 0 {
-			log.Debugf("TimerChecker txch len %d", len(txch))
+			log.Infof("TimerChecker txch len %d", len(txch))
 			continue
 		}
 
@@ -510,11 +511,12 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTre
 				tx:    tx,
 			}
 
-			txch <- arg
+			if uint32(len(txch)) < TxchCap/2 {
+				txch <- arg
+			}
 		}
 		Existlock.Unlock()
 		MTlock.Unlock()
-
 	}
 }
 
@@ -529,12 +531,12 @@ func handleStoreRequest() {
 		case arg := <-txch:
 			var batchstore leveldbstore.LevelDBStore
 			batchstore = *DefStore
-			addLeafsToStorage(DefSdk, DefMerkleTree, batchstore, arg.leafv, arg.tx)
+			addLeafsToStorage(DefSdk, batchstore, arg.leafv, arg.tx)
 		}
 	}
 }
 
-func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree, store leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
+func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
 	MTlock.Lock()
 	defer MTlock.Unlock()
 	wg.Add(1)
@@ -547,59 +549,64 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, cMtree *merkle.CompactMerkleTree
 		return
 	}
 
-	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
-	}
-
 	callCount := 0
 	var newroot common.Uint256
 	var treeSize uint32
+	var tochain bool
+	tochain = true
+
+	log.Info("addLeafsToStorage")
 
 	// must the same seq with contract. so here use lock to ensure atomic.
-	for {
-		newroot, treeSize, err = invokeWasmContract(ontSdk, tx)
-		callCount++
-		if err != nil {
-			if callCount > 3 {
-				log.Debugf("call contract failed %s", err)
-				return
+	if tochain {
+		for {
+			newroot, treeSize, err = invokeWasmContract(ontSdk, tx)
+			callCount++
+			if err != nil {
+				if callCount > 3 {
+					log.Infof("call contract failed %s", err)
+					return
+				}
+				continue
 			}
-			continue
+
+			break
 		}
-
-		break
 	}
 
-	tmpTree := &merkle.CompactMerkleTree{}
-	rawtree, _ := cMtree.Marshal()
-	tmpTree.UnMarshal(rawtree)
+	memhashstore := NewMemHashStore()
+	tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
+
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
+		log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
 		tmpTree.AppendHash(leafv[i])
+		// batch will not commit if failed.
+		putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 	}
 
-	if newroot != tmpTree.Root() || treeSize != tmpTree.TreeSize() {
-		panic(fmt.Errorf("chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, cMtree.Root(), treeSize, cMtree.TreeSize()))
-	}
-
-	// than mark the tx resolved. once tx mark resolved. cMtree must store to local.
-	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		// update index. zero based.
-		putLeafIndex(&store, leafv[i], cMtree.TreeSize()-1)
+	if tochain {
+		if newroot != tmpTree.Root() || treeSize != tmpTree.TreeSize() {
+			panic(fmt.Errorf("chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), treeSize, tmpTree.TreeSize()))
+		}
 	}
 
 	// transaction success
 	TxStore.DeleteTxStore(tx.Hash(), &store)
 	TxStore.UpdateSelfToStore(&store)
-	SaveCompactMerkleTree(cMtree, &store)
+
+	t := merkle.NewTree(tmpTree.TreeSize(), tmpTree.Hashes(), FileHashStore)
+	SaveCompactMerkleTree(t, &store)
+
 	err = store.BatchCommit()
 	if err != nil {
 		panic(err)
 	}
 
-	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		cMtree.AppendHash(leafv[i])
-	}
-	log.Debugf("root: %x, treeSize: %d", cMtree.Root(), cMtree.TreeSize())
+	FileHashStore.Append(memhashstore.Hashes)
+	FileHashStore.Flush()
+
+	DefMerkleTree = t
+	log.Infof("root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
 }
 
 func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
@@ -607,6 +614,7 @@ func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 	if err != nil {
 		return nil, err
 	}
+	log.Debugf("leaf %x index %d\n", leaf_hash, index)
 
 	return cMtree.InclusionProof(index, treeSize)
 }
@@ -656,6 +664,17 @@ func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, 
 }
 
 func main() {
+	var isCPUPprof bool
+	isCPUPprof = true
+	if isCPUPprof {
+		file, err := os.Create("./cpu.pprof")
+		if err != nil {
+			log.Errorf("create cpu file %s", err)
+			return
+		}
+		pprof.StartCPUProfile(file)
+		defer pprof.StopCPUProfile()
+	}
 	if err := setupAPP().Run(os.Args); err != nil {
 		os.Exit(1)
 	}
@@ -800,7 +819,7 @@ func convertParamsToHex(params []interface{}) ([]byte, bool) {
 func rpcVerify(params []interface{}) map[string]interface{} {
 	hx, err := convertParamsToHex(params)
 	if err {
-		log.Debugf("Verify convert params err: %s\n", err)
+		log.Infof("Verify convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
 	}
 
@@ -809,13 +828,13 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 	root, eof := source.NextHash()
 	treeSize, eof := source.NextUint32()
 	if eof {
-		log.Debugf("Verify param less than require")
+		log.Infof("Verify param less than require")
 		return responsePack(INVALID_PARAM, "")
 	}
 	// check do not have more byte. accurate to match the args.
 	_, eof = source.NextByte()
 	if !eof {
-		log.Debugf("Verify param len overflow")
+		log.Infof("Verify param len overflow")
 		return responsePack(INVALID_PARAM, "")
 	}
 
@@ -824,8 +843,11 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 
 	res := <-responseCh
 
-	//res, msg := Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
 	log.Infof("Verify leaf :%x, root:%x, treeSize: %d, exist: %d, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
+	//res, msg := Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
+	if res.err != nil {
+		return responsePack(VERIFY_FAILED, "")
+	}
 
 	return responseSuccess(res)
 }
@@ -833,20 +855,20 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 func rpcBatchAdd(params []interface{}) map[string]interface{} {
 	hx, err := convertParamsToHex(params)
 	if err {
-		log.Debugf("batch add convert params err: %s\n", err)
+		log.Infof("batch add convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
 	}
 
 	source := common.NewZeroCopySource(hx)
 	if (source.Size() % common.UINT256_SIZE) != 0 {
-		log.Debugf("batchadd args len not mod by UINT256_SIZE, len: %d\n", source.Size())
+		log.Infof("batchadd args len not mod by UINT256_SIZE, len: %d\n", source.Size())
 		return responsePack(INVALID_PARAM, "")
 	}
 
 	hashes := make([]common.Uint256, 0)
 	leaf, eof := source.NextHash()
 	if eof {
-		log.Debug("batchadd args len less UINT256_SIZE\n")
+		log.Info("batchadd args len less UINT256_SIZE\n")
 		return responsePack(INVALID_PARAM, "")
 	}
 	hashes = append(hashes, leaf)
@@ -861,9 +883,9 @@ func rpcBatchAdd(params []interface{}) map[string]interface{} {
 	var batchstore leveldbstore.LevelDBStore
 	batchstore = *DefStore
 	// can not partial add. chain will not save to storage if contract exec failed.
-	ok := BatchAdd(DefMerkleTree, batchstore, hashes)
+	ok := BatchAdd(batchstore, hashes)
 	if ok != nil {
-		log.Debugf("batch add failed %s\n", ok)
+		log.Infof("batch add failed %s\n", ok)
 		return responsePack(ADDHASH_FAILED, "")
 	}
 
@@ -921,3 +943,27 @@ func clean() {
 	os.RemoveAll(fileHashStoreName)
 	os.RemoveAll(log.PATH)
 }
+
+type memHashStore struct {
+	Hashes []common.Uint256
+}
+
+// NewMemHashStore returns a HashStore implement in memory
+func NewMemHashStore() *memHashStore {
+	return &memHashStore{}
+}
+
+func (self *memHashStore) Append(hash []common.Uint256) error {
+	self.Hashes = append(self.Hashes, hash...)
+	return nil
+}
+
+func (self *memHashStore) GetHash(pos uint32) (common.Uint256, error) {
+	return self.Hashes[pos], nil
+}
+
+func (self *memHashStore) Flush() error {
+	return nil
+}
+
+func (self *memHashStore) Close() {}

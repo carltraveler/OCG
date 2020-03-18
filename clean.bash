@@ -3,3 +3,4 @@
 rm Log -rf
 rm -f filestore.db
 rm -rf leveldb
+rm -f cpu.pprof
