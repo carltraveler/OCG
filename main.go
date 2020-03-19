@@ -46,21 +46,14 @@ const (
 const (
 	levelDBName       string = "leveldb"
 	fileHashStoreName string = "filestore.db"
-	BATCHNUM          uint32 = 1024
+	DefMaxBatchNum    uint32 = 256
 	TxchCap           uint32 = 5000
 )
 
 var (
+	maxBatchNum     uint32
+	offChainMode    bool
 	contractAddress common.Address
-)
-
-const (
-//walletname      string = "./wallet.dat"
-//walletpassword  string = "123456"
-//ontNode         string = "http://localhost:20336"
-//signerAddress   string = "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"
-//serverPort      int    = 32339
-//contracthexAddr string = "8ce5b4c91f89aa72662d5fa9db5ee642b57dfd05"
 )
 
 type ServerConfig struct {
@@ -238,6 +231,7 @@ func InitCompactMerkleTree() error {
 	batchstore = *DefStore
 
 	go TxStoreTimeChecker(DefSdk, batchstore)
+	go cacheLeafs()
 	return nil
 }
 
@@ -285,6 +279,10 @@ func putLeafIndex(store *leveldbstore.LevelDBStore, leaf common.Uint256, index u
 	store.BatchPut(GetKeyByHash(PREFIX_INDEX, leaf), sink.Bytes())
 }
 
+func delLeafIndex(store *leveldbstore.LevelDBStore, leaf common.Uint256) {
+	store.Delete(GetKeyByHash(PREFIX_INDEX, leaf))
+}
+
 func getLeafIndex(store *leveldbstore.LevelDBStore, leaf common.Uint256) (uint32, error) {
 	val, err := store.Get(GetKeyByHash(PREFIX_INDEX, leaf))
 	if err != nil {
@@ -307,8 +305,8 @@ func hashLeaf(data []byte) common.Uint256 {
 }
 
 func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*types.MutableTransaction, error) {
-	if uint32(len(leafv)) > BATCHNUM {
-		return nil, fmt.Errorf("too much elemet. most %d.", BATCHNUM)
+	if uint32(len(leafv)) > maxBatchNum {
+		return nil, fmt.Errorf("too much elemet. most %d.", maxBatchNum)
 	}
 
 	args := make([]interface{}, 2)
@@ -389,30 +387,63 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 	return newroot, treeSize, nil
 }
 
-// duplicate handle
-// contract failed handle
-func BatchAdd(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
-	Existlock.Lock()
-	defer Existlock.Unlock()
+type cacheCh struct {
+	Leafs []common.Uint256
+}
+
+var (
+	cacheChannel = make(chan cacheCh, 100)
+	cacheExitCh  = make(chan bool)
+)
+
+func runleafs(leafsCache []common.Uint256, clean bool) []common.Uint256 {
+	for {
+		var batchstore leveldbstore.LevelDBStore
+		batchstore = *DefStore
+
+		if uint32(len(leafsCache)) >= maxBatchNum {
+			sendl := leafsCache[0:maxBatchNum]
+			log.Debugf("cache full. leafsCache len %d", len(leafsCache))
+			ledgerAppendTxRoll(batchstore, sendl)
+			leafsCache = leafsCache[maxBatchNum:]
+		} else if clean {
+			if uint32(len(leafsCache)) != 0 {
+				ledgerAppendTxRoll(batchstore, leafsCache)
+				leafsCache = make([]common.Uint256, 0)
+			}
+			break
+		} else {
+			break
+		}
+	}
+
+	return leafsCache
+}
+
+func cacheLeafs() {
 	wg.Add(1)
 	defer wg.Done()
 
-	store.NewBatch()
+	var leafsCache []common.Uint256
+	leafsCache = make([]common.Uint256, 0)
 
-	if uint32(len(leafv)) > BATCHNUM {
-		return fmt.Errorf("too much elemet. most %d.", BATCHNUM)
-	}
-
-	// check duplicate. and construct transaction.
-	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		_, err := getLeafIndex(&store, leafv[i])
-		if err == nil {
-			return errors.New("duplicate hash leafs. please check.")
+	for {
+		select {
+		case <-cacheExitCh:
+			log.Info("cacheLeafs get quit signal")
+			leafsCache = runleafs(leafsCache, true)
+			return
+		case t := <-cacheChannel:
+			leafsCache = append(leafsCache, t.Leafs...)
+			leafsCache = runleafs(leafsCache, false)
+		case <-time.After(time.Second * 10):
+			leafsCache = runleafs(leafsCache, true)
 		}
-		// batch will protect like roll back if failed
-		putLeafIndex(&store, leafv[i], math.MaxUint32)
 	}
+}
 
+func ledgerAppendTx(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
+	store.NewBatch()
 	tx, err := constructTransation(DefSdk, leafv)
 	if err != nil {
 		return err
@@ -427,20 +458,69 @@ func BatchAdd(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
 
 	err = store.BatchCommit()
 	if err != nil {
+		delete(TxStore.Txhashes, tx.Hash())
 		return err
 	}
 
-	arg := transferArg{
-		leafv: leafv,
-		tx:    tx,
-	}
-
 	if uint32(len(txch)) < TxchCap/2 {
-		log.Infof("TimerChecker txch len %d", len(txch))
+		arg := transferArg{
+			leafv: leafv,
+			tx:    tx,
+		}
+		//log.Infof("TimerChecker txch len %d", len(txch))
 		txch <- arg
 	}
 
 	return nil
+}
+
+func ledgerAppendTxRoll(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
+	err := ledgerAppendTx(store, leafv)
+	if err != nil {
+		log.Errorf("ledgerAppendTxRoll err : %s", err)
+		for i := uint32(0); i < uint32(len(leafv)); i++ {
+			log.Infof("cacheLeafs timer. leaf: %x failed", leafv[i])
+			delLeafIndex(DefStore, leafv[i])
+		}
+	}
+
+	return err
+}
+
+func BatchAdd(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
+	Existlock.Lock()
+	defer Existlock.Unlock()
+	wg.Add(1)
+	defer wg.Done()
+
+	store.NewBatch()
+
+	if uint32(len(leafv)) > maxBatchNum {
+		return fmt.Errorf("too much elemet. most %d.", maxBatchNum)
+	}
+
+	for i := uint32(0); i < uint32(len(leafv)); i++ {
+		_, err := getLeafIndex(&store, leafv[i])
+		if err == nil {
+			return errors.New("duplicate hash leafs. please check.")
+		}
+		putLeafIndex(&store, leafv[i], math.MaxUint32)
+	}
+
+	err := store.BatchCommit()
+	if err != nil {
+		return err
+	}
+
+	if uint32(len(leafv)) < maxBatchNum {
+		leafs := cacheCh{
+			Leafs: leafv,
+		}
+		cacheChannel <- leafs
+		return nil
+	}
+
+	return ledgerAppendTxRoll(store, leafv)
 }
 
 func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
@@ -456,7 +536,7 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 	method, _, irregular, eof := sourceh.NextString()
 	argsNum, _, irregular, eof := sourceh.NextVarUint() // argNum is leaf vector len.
 	if irregular || eof || method != "batch_add" {
-		return nil, fmt.Errorf("leafvFromTx error irregular: %d, eof : %d, method: %s, argsNum: %d", irregular, eof, method, argsNum)
+		return nil, fmt.Errorf("leafvFromTx error irregular: %v, eof : %v, method: %s, argsNum: %d", irregular, eof, method, argsNum)
 	}
 
 	res := make([]common.Uint256, 0)
@@ -502,9 +582,11 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore
 				return
 			}
 
-			for i := range leafv {
-				log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
-			}
+			log.Errorf("TimerChecker: leafv len %d\n", len(leafv))
+			fmt.Printf("TimerChecker: leafv len %d\n", len(leafv))
+			//for i := range leafv {
+			//	log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
+			//}
 
 			arg := transferArg{
 				leafv: leafv,
@@ -552,13 +634,11 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	callCount := 0
 	var newroot common.Uint256
 	var treeSize uint32
-	var tochain bool
-	tochain = true
 
-	log.Info("addLeafsToStorage")
+	log.Debugf("addLeafsToStorage leafs len %d", len(leafv))
 
 	// must the same seq with contract. so here use lock to ensure atomic.
-	if tochain {
+	if !offChainMode {
 		for {
 			newroot, treeSize, err = invokeWasmContract(ontSdk, tx)
 			callCount++
@@ -578,13 +658,80 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
 
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
+		//log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
 		tmpTree.AppendHash(leafv[i])
 		// batch will not commit if failed.
 		putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 	}
 
-	if tochain {
+	log.Infof("00 root: %x, treeSize: %d", tmpTree.Root(), tmpTree.TreeSize())
+	treeSizetest := tmpTree.TreeSize()
+	if treeSizetest == 1510656 {
+		if tmpTree.Root() != HashFromHexString("df087947d94a2043a4f25cf9a26e889b051b3e57b1e1b10e7abe07de9623f66e") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 2022656 {
+		if tmpTree.Root() != HashFromHexString("18ddaa510c7179019ae5e493267cf76f441da678ef25c8ad559115abab902006") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 742656 {
+		if tmpTree.Root() != HashFromHexString("12b24639478779239f4297c3d8fc5b541e127d76eb6ead29bde2ef50b65830d8") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 998656 {
+		if tmpTree.Root() != HashFromHexString("470cb49ddca6a74cdee7d5fd9643bc6074b9580378e84de39203141e834381a6") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 1254656 {
+		if tmpTree.Root() != HashFromHexString("3030e254988f9124d8694eeec75398efc0d02fd3b23c7fda317384e19d4d6bc9") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 1510656 {
+		if tmpTree.Root() != HashFromHexString("df087947d94a2043a4f25cf9a26e889b051b3e57b1e1b10e7abe07de9623f66e") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 1766656 {
+		if tmpTree.Root() != HashFromHexString("ef33b4b98c34b22f371886d170a5ab810f48907fc5afd67a5c240a72a037cd06") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 1254656 {
+		if tmpTree.Root() != HashFromHexString("3030e254988f9124d8694eeec75398efc0d02fd3b23c7fda317384e19d4d6bc9") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	} else if treeSizetest == 2176000 {
+		if tmpTree.Root() != HashFromHexString("49d313a9697d8b6ab315ca11d391b695b331fd0b9f8180f99c26dfdb1d93b4b3") {
+			for i := uint32(0); i < uint32(len(leafv)); i++ {
+				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
+			}
+			panic("error root")
+		}
+	}
+
+	if !offChainMode {
 		if newroot != tmpTree.Root() || treeSize != tmpTree.TreeSize() {
 			panic(fmt.Errorf("chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), treeSize, tmpTree.TreeSize()))
 		}
@@ -606,7 +753,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	FileHashStore.Flush()
 
 	DefMerkleTree = t
-	log.Infof("root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
+	//log.Infof("11 root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
 }
 
 func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
@@ -665,7 +812,7 @@ func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, 
 
 func main() {
 	var isCPUPprof bool
-	isCPUPprof = true
+	isCPUPprof = false
 	if isCPUPprof {
 		file, err := os.Create("./cpu.pprof")
 		if err != nil {
@@ -690,6 +837,15 @@ var (
 		Usage: "set the log levela.",
 		Value: log.InfoLog,
 	}
+	OffChainFlag = cli.BoolFlag{
+		Name:  "offchain",
+		Usage: "set offchain test mode",
+	}
+	MaxBatchNumFlag = cli.UintFlag{
+		Name:  "maxbatchnum,b",
+		Usage: "set the batch num",
+		Value: uint(DefMaxBatchNum),
+	}
 )
 
 func setupAPP() *cli.App {
@@ -702,6 +858,8 @@ func setupAPP() *cli.App {
 	app.Flags = []cli.Flag{
 		ConfigFlag,
 		LogLevelFlag,
+		OffChainFlag,
+		MaxBatchNumFlag,
 	}
 	app.Before = func(context *cli.Context) error {
 		runtime.GOMAXPROCS(runtime.NumCPU())
@@ -737,6 +895,11 @@ func initConfig(ctx *cli.Context) error {
 func startOGQServer(ctx *cli.Context) error {
 	LogLevel := ctx.Uint(utils.GetFlagName(LogLevelFlag))
 	log.InitLog(int(LogLevel), log.PATH, log.Stdout)
+
+	maxBatchNum = uint32(ctx.Uint(utils.GetFlagName(MaxBatchNumFlag)))
+	offChainMode = ctx.GlobalBool(utils.GetFlagName(OffChainFlag))
+	log.Infof("maxBatchNum : %d", maxBatchNum)
+	log.Infof("offChainMode : %d", offChainMode)
 
 	err := initConfig(ctx)
 	if err != nil {
@@ -913,6 +1076,7 @@ func waitToExit(ctx *cli.Context) {
 		for sig := range sc {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
 			exitch <- true
+			cacheExitCh <- true
 
 			wg.Wait()
 			log.Info("Now exit")
@@ -967,3 +1131,15 @@ func (self *memHashStore) Flush() error {
 }
 
 func (self *memHashStore) Close() {}
+
+func HashFromHexString(s string) common.Uint256 {
+	hx, err := common.HexToBytes(s)
+	if err != nil {
+		panic(err)
+	}
+	res, err := common.Uint256ParseFromBytes(hx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}

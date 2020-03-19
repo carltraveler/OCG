@@ -111,8 +111,7 @@ type verifyArg struct {
 }
 
 var (
-	//N uint32 = 1024
-	N uint32 = 10
+	N uint32 = 256
 )
 
 func testVerify(client *RpcClient, tree *merkle.CompactMerkleTree, verifych <-chan verifyArg) {
@@ -144,57 +143,71 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(100000)
+		numbatch := uint32(8500)
 		verifychan := make(chan verifyArg, numbatch)
 		tree := MerkleInit()
 		//var alladdargs []string
-		alladdargs := make([]string, numbatch, numbatch)
+		//alladdargs := make([]string, numbatch, numbatch)
 
 		go testVerify(client, tree, verifychan)
 
-		fmt.Printf("prepare args")
+		fmt.Printf("prepare args\n")
 		for m := uint32(0); m < numbatch; m++ {
-			if m%5 == 0 {
-				fmt.Printf("prepare %d\n", m)
+			if m%1000 == 0 {
+				fmt.Printf("send %d\n", m)
 			}
 			var leafs []common.Uint256
-			var root []common.Uint256
+			//var root []common.Uint256
 			leafs = GenerateLeafv(uint32(0)+N*m, N)
-			//root = getleafvroot(leafs, tree)
+			//if m == numbatch-1 {
+			//printLeafs("leafs", leafs)
+			//}
+			getleafvroot(leafs, tree, false)
+			//printLeafs("root", root)
+			//tree.AppendHash(leafs[i])
 			addArgs := leafvToAddArgs(leafs)
 			//generateConArgs(leafs)
 			//alladdargs = append(alladdargs, addArgs)
-			alladdargs[m] = addArgs
+			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
-			//if err != nil {
-			//	fmt.Printf("Add Error: %s\n", err)
-			//	return
-			//}
 
-			//fmt.Printf("Add Success %s\n", string(res))
-
-			// after tx ok.
-			_ = verifyArg{
-				Leafs: leafs,
-				Root:  root,
-				M:     m,
-			}
-			//verifychan <- varg
-		}
-		fmt.Printf("prepare args done")
-
-		t0 := time.Now()
-		for m := uint32(0); m < numbatch; m++ {
-			res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
+			_, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addArgs})
 			if err != nil {
 				fmt.Printf("Add Error: %s\n", err)
 				return
 			}
 
-			fmt.Printf("Add Success %s\n", string(res))
-		}
+			if (m*N)%(256*100) == 0 {
+				fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
+			}
 
-		fmt.Println("duration", time.Since(t0))
+			//fmt.Printf("Add Success %s\n", string(res))
+
+			// after tx ok.
+			//_ = verifyArg{
+			//	Leafs: leafs,
+			//	Root:  root,
+			//	M:     m,
+			//}
+			//verifychan <- varg
+		}
+		fmt.Printf("prepare args done\n")
+		fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
+
+		/*
+			t0 := time.Now()
+			for m := uint32(0); m < numbatch; m++ {
+				res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
+				if err != nil {
+					fmt.Printf("Add Error: %s\n", err)
+					return
+				}
+
+				fmt.Printf("Add Success %s\n", string(res))
+			}
+
+			fmt.Println("duration", time.Since(t0))
+		*/
 	}
 
 	waitToExit()
@@ -232,16 +245,18 @@ func GenerateLeafv(start uint32, N uint32) []common.Uint256 {
 }
 
 func MerkleInit() *merkle.CompactMerkleTree {
-	store, _ := merkle.NewFileHashStore("merkletree.db", 0)
-	tree := merkle.NewTree(0, nil, store)
+	//store, _ := merkle.NewFileHashStore("merkletree.db", 0)
+	tree := merkle.NewTree(0, nil, nil)
 	return tree
 }
 
-func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree) []common.Uint256 {
+func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree, needroot bool) []common.Uint256 {
 	root := make([]common.Uint256, 0)
 	for i := range leafs {
 		tree.AppendHash(leafs[i])
-		root = append(root, tree.Root())
+		if needroot {
+			root = append(root, tree.Root())
+		}
 	}
 
 	return root
