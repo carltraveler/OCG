@@ -155,7 +155,7 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(100000)
+		numbatch := uint32(18500)
 		verifychan := make(chan verifyArg, numbatch)
 		tree := MerkleInit()
 		//var alladdargs []string
@@ -177,17 +177,17 @@ func main() {
 			//getleafvroot(leafs, tree, false)
 			//printLeafs("root", root)
 			//tree.AppendHash(leafs[i])
-			addArgs := leafvToAddArgs(leafs)
+			//addArgs := leafvToAddArgs(leafs)
 			//generateConArgs(leafs)
 			//alladdargs = append(alladdargs, addArgs)
 			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
 
-			_, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addArgs})
-			if err != nil {
-				fmt.Printf("Add Error: %s\n", err)
-				return
-			}
+			//_, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addArgs})
+			//if err != nil {
+			//	fmt.Printf("Add Error: %s\n", err)
+			//	return
+			//}
 
 			//if (m*N)%(256*100) == 0 {
 			//	fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
@@ -203,8 +203,8 @@ func main() {
 			//}
 			//verifychan <- varg
 
-			//root := HashFromHexString("d73f19d2f8f1811edd39c67a3d489e35adf8bb59d8a6eb98aae19fdde97ddd15")
-			//verifylast(client, leafs, root, numbatch*N)
+			root := HashFromHexString("d73f19d2f8f1811edd39c67a3d489e35adf8bb59d8a6eb98aae19fdde97ddd15")
+			verifylast(client, leafs, root, numbatch*N)
 		}
 		fmt.Printf("prepare args done\n")
 		fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())

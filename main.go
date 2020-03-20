@@ -592,10 +592,13 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore
 				tx:    tx,
 			}
 
-			if uint32(len(txch)) < TxchCap/2 {
+			if uint32(len(txch)) < (TxchCap - TxchCap/5) {
 				txch <- arg
+			} else {
+				break
 			}
 		}
+
 		Existlock.Unlock()
 		MTlock.Unlock()
 	}
