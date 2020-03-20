@@ -114,40 +114,17 @@ var (
 	N uint32 = 255
 )
 
-func testVerify(client *RpcClient, tree *merkle.CompactMerkleTree, verifych <-chan verifyArg) {
-	for {
-		select {
-		case p := <-verifych:
-			time.Sleep(time.Second * 5)
-			leafs := p.Leafs
-			root := p.Root
-			m := p.M
-			for k := uint32(0); k < uint32(N); k++ {
-				for x := int(k); x >= 0; x-- {
-					fmt.Printf("Verfiy leaf %x, root %x, treeSize: %d\n", leafs[x], root[k], k+1+N*m)
-					vargs := getVerifyArgs(leafs[x], root[k], k+1+N*m)
-					res, err := client.sendRpcRequest(client.GetNextQid(), "verify", []interface{}{vargs})
-					if err != nil {
-						fmt.Printf("Verify Failed %s\n", err)
-						return
-					}
-					fmt.Printf("Verify Success %s\n", string(res))
-				}
-			}
-		}
-	}
-}
-
-func verifylast(client *RpcClient, leafs []common.Uint256, root common.Uint256, treeSize uint32) {
+func verifyleaf(client *RpcClient, leafs []common.Uint256) {
 	for i := uint32(0); i < uint32(len(leafs)); i++ {
-		vargs := getVerifyArgs(leafs[i], root, treeSize)
-		_, err := client.sendRpcRequest(client.GetNextQid(), "verify", []interface{}{vargs})
+		vargs := getVerifyArgs(leafs[i])
+		_, err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
 		if err != nil {
 			fmt.Printf("Verify Failed %s\n", err)
 			panic("xxx")
 		}
 		//fmt.Printf("Verify Success %s\n", string(res))
 	}
+
 }
 
 func main() {
@@ -155,13 +132,10 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(100000)
-		verifychan := make(chan verifyArg, numbatch)
+		numbatch := uint32(10000)
 		tree := MerkleInit()
 		//var alladdargs []string
 		//alladdargs := make([]string, numbatch, numbatch)
-
-		go testVerify(client, tree, verifychan)
 
 		fmt.Printf("prepare args\n")
 		for m := uint32(0); m < numbatch; m++ {
@@ -174,58 +148,30 @@ func main() {
 			//if m == numbatch-1 {
 			//printLeafs("leafs", leafs)
 			//}
-			//getleafvroot(leafs, tree, false)
+			//root = getleafvroot(leafs, tree, false)
 			//printLeafs("root", root)
 			//tree.AppendHash(leafs[i])
 			addArgs := leafvToAddArgs(leafs)
 			//generateConArgs(leafs)
 			//alladdargs = append(alladdargs, addArgs)
 			//alladdargs[m] = addArgs
-			//res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
+			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
+			verify := false
 
-			_, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{addArgs})
-			if err != nil {
-				fmt.Printf("Add Error: %s\n", err)
-				return
+			if verify {
+
+				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
+				if err != nil {
+					fmt.Printf("Add Error: %s\n", err)
+					//return
+				}
+			} else {
+				verifyleaf(client, leafs)
 			}
-
-			//if (m*N)%(256*100) == 0 {
-			//	fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
-			//}
-
-			//fmt.Printf("Add Success %s\n", string(res))
-
-			// after tx ok.
-			//_ = verifyArg{
-			//	Leafs: leafs,
-			//	Root:  root,
-			//	M:     m,
-			//}
-			//verifychan <- varg
-
-			//root := HashFromHexString("d73f19d2f8f1811edd39c67a3d489e35adf8bb59d8a6eb98aae19fdde97ddd15")
-			//verifylast(client, leafs, root, numbatch*N)
 		}
 		fmt.Printf("prepare args done\n")
 		fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
-
-		/*
-			t0 := time.Now()
-			for m := uint32(0); m < numbatch; m++ {
-				res, err := client.sendRpcRequest(client.GetNextQid(), "batch_add", []interface{}{alladdargs[m]})
-				if err != nil {
-					fmt.Printf("Add Error: %s\n", err)
-					return
-				}
-
-				fmt.Printf("Add Success %s\n", string(res))
-			}
-
-			fmt.Println("duration", time.Since(t0))
-		*/
 	}
-
-	waitToExit()
 }
 
 func waitToExit() {
@@ -277,98 +223,30 @@ func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree, needro
 	return root
 }
 
-func leafvToAddArgs(leafs []common.Uint256) string {
-	sink := common.NewZeroCopySink(nil)
+func leafvToAddArgs(leafs []common.Uint256) []interface{} {
+	addargs := make([]interface{}, 0, len(leafs))
+
 	for i := range leafs {
-		sink.WriteHash(leafs[i])
+		addargs = append(addargs, hex.EncodeToString(leafs[i][:]))
 	}
 
-	return hex.EncodeToString(sink.Bytes())
+	return addargs
 }
 
-func generateConArgs(leafs []common.Uint256) {
-	for i := range leafs {
-		fmt.Printf("bytearray:%x,", leafs[i])
-	}
+func getVerifyArgs(leaf common.Uint256) []interface{} {
+	vargs := make([]interface{}, 1, 1)
+	vargs[0] = hex.EncodeToString(leaf[:])
+	return vargs
+}
+
+func clean() {
+	os.RemoveAll("merkletree.db")
 }
 
 func printLeafs(prefix string, leafs []common.Uint256) {
 	for i := range leafs {
 		fmt.Printf("%s[%d]: %x\n", prefix, i, leafs[i])
 	}
-}
-
-func getVerifyArgs(leaf common.Uint256, root common.Uint256, treeSize uint32) string {
-	sink := common.NewZeroCopySink(nil)
-	sink.WriteHash(leaf)
-	sink.WriteHash(root)
-	sink.WriteUint32(treeSize)
-	return hex.EncodeToString(sink.Bytes())
-}
-
-//=================
-
-func GenerateAddArgs(start uint32, N uint32) string {
-	//N := uint32(3)
-	//leafs := make([]common.Uint256, 0)
-	//for i := uint32(1); i <= N; i++ {
-	//	x := byte(i)
-	//	leafs = append(leafs, hashLeaf([]byte{x}))
-	//}
-
-	//N := uint32(2)
-	//start := uint32(1)
-	leafs := make([]common.Uint256, 0)
-	for i := uint32(start); i < start+N; i++ {
-		x := byte(i)
-		leafs = append(leafs, hashLeaf([]byte{x}))
-	}
-
-	sink := common.NewZeroCopySink(nil)
-	for i := range leafs {
-		fmt.Printf("hash[%d]: %x\n", i, leafs[i])
-		sink.WriteHash(leafs[i])
-	}
-	fmt.Printf("\n")
-
-	store, _ := merkle.NewFileHashStore("merkletree.db", 0)
-	tree := merkle.NewTree(0, nil, store)
-	if tree.Root() != sha256.Sum256(nil) {
-		panic("root error")
-	}
-	for i := range leafs {
-		tree.AppendHash(leafs[i])
-	}
-
-	fmt.Printf("\n")
-
-	fmt.Printf("root: %x\n", tree.Root())
-
-	return hex.EncodeToString(sink.Bytes())
-}
-
-func GenerateVerifyArgs() string {
-	N := uint32(2)
-	leafs := make([]common.Uint256, 0)
-	for i := uint32(1); i <= N; i++ {
-		x := byte(i)
-		leafs = append(leafs, hashLeaf([]byte{x}))
-	}
-
-	sink := common.NewZeroCopySink(nil)
-
-	for i := range leafs {
-		fmt.Printf("bytearray:%x,", leafs[i])
-		sink.WriteHash(leafs[i])
-	}
-	fmt.Printf("\n")
-	sink.WriteUint32(N)
-
-	return hex.EncodeToString(sink.Bytes())
-}
-
-func clean() {
-	os.RemoveAll("merkletree.db")
 }
 
 func HashFromHexString(s string) common.Uint256 {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	sdk "github.com/ontio/ontology-go-sdk"
+	sdkcom "github.com/ontio/ontology-go-sdk/common"
 
 	"github.com/ontio/ontology/cmd/utils"
 	"github.com/ontio/ontology/common"
@@ -66,17 +67,19 @@ type ServerConfig struct {
 }
 
 const (
-	SUCCESS        int64 = 0
-	INVALID_PARAM  int64 = 41001
-	ADDHASH_FAILED int64 = 41002
-	VERIFY_FAILED  int64 = 41003
+	SUCCESS         int64 = 0
+	INVALID_PARAM   int64 = 41001
+	ADDHASH_FAILED  int64 = 41002
+	VERIFY_FAILED   int64 = 41003
+	NODE_OUTSERVICE int64 = 41004
 )
 
 var ErrMap = map[int64]string{
-	SUCCESS:        "SUCCESS",
-	INVALID_PARAM:  "INVALID_PARAM",
-	ADDHASH_FAILED: "ADDHASH_FAILED",
-	VERIFY_FAILED:  "VERIFY_FAILED",
+	SUCCESS:         "SUCCESS",
+	INVALID_PARAM:   "INVALID_PARAM",
+	ADDHASH_FAILED:  "ADDHASH_FAILED",
+	VERIFY_FAILED:   "VERIFY_FAILED",
+	NODE_OUTSERVICE: "NODE_OUTSERVICE",
 }
 
 type TransactionStore struct {
@@ -152,6 +155,7 @@ var (
 	DefStore      *leveldbstore.LevelDBStore
 	DefMerkleTree *merkle.CompactMerkleTree
 	DefSdk        *sdk.OntologySdk
+	DefVerifyTx   *types.MutableTransaction
 	MTlock        *sync.RWMutex
 	Existlock     *sync.Mutex
 	FileHashStore merkle.HashStore
@@ -179,6 +183,11 @@ func InitSigner() error {
 	DefSigner, err = wallet.GetAccountByAddress(DefConfig.SignerAddress, []byte(DefConfig.Walletpassword))
 	if err != nil {
 		return fmt.Errorf("error in GetDefaultAccount:%s\n", err)
+	}
+
+	DefVerifyTx, err = contractVerifyTransaction(DefSdk)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -307,6 +316,13 @@ func hashLeaf(data []byte) common.Uint256 {
 	return sha256.Sum256(tmp)
 }
 
+func contractVerifyTransaction(ontSdk *sdk.OntologySdk) (*types.MutableTransaction, error) {
+	args := make([]interface{}, 1)
+	args[0] = "batch_add"
+
+	return getTxWithArgs(ontSdk, args)
+}
+
 func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*types.MutableTransaction, error) {
 	if uint32(len(leafv)) > maxBatchNum {
 		return nil, fmt.Errorf("too much elemet. most %d.", maxBatchNum)
@@ -320,7 +336,11 @@ func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*type
 	args[0] = "batch_add"
 	args[1] = params
 
-	tx, err := utils2.NewWasmVMInvokeTransaction(0, 8000000, contractAddress, args)
+	return getTxWithArgs(ontSdk, args)
+}
+
+func getTxWithArgs(ontSdk *sdk.OntologySdk, args []interface{}) (*types.MutableTransaction, error) {
+	tx, err := utils2.NewWasmVMInvokeTransaction(500, 8000000, contractAddress, args)
 	if err != nil {
 		return nil, fmt.Errorf("create tx failed: %s", err)
 	}
@@ -328,31 +348,39 @@ func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*type
 	if err != nil {
 		return nil, fmt.Errorf("signer tx failed: %s", err)
 	}
-
 	return tx, nil
 }
 
-func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (common.Uint256, uint32, error) {
+func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (*sdkcom.SmartContactEvent, error) {
 	txHash, err := ontSdk.SendTransaction(tx)
 	if err != nil {
-		return merkle.EMPTY_HASH, 0, fmt.Errorf("send tx failed: %s", err)
+		return nil, fmt.Errorf("send tx failed: %s", err)
 	}
 
 	log.Infof("tx hash : %s", txHash.ToHexString())
 
 	_, err = ontSdk.WaitForGenerateBlock(30 * time.Second)
 	if err != nil {
-		return merkle.EMPTY_HASH, 0, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
+		return nil, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
 	}
 
 	events, err := ontSdk.GetSmartContractEvent(txHash.ToHexString())
 	if err != nil {
-		return merkle.EMPTY_HASH, 0, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
+		return nil, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
 	}
 
 	// here Transaction success.
 	if events.State == 0 {
-		return merkle.EMPTY_HASH, 0, fmt.Errorf("error in events.State is 0 failed.\n")
+		return nil, fmt.Errorf("error in events.State is 0 failed.\n")
+	}
+
+	return events, nil
+}
+
+func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (common.Uint256, uint32, error) {
+	events, err := invokeWasmContractGetEvent(ontSdk, tx)
+	if err != nil {
+		return merkle.EMPTY_HASH, 0, err
 	}
 
 	if len(events.Notify) != 1 {
@@ -381,11 +409,11 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 		log.Errorf("notify supported type err %s\n", reflect.TypeOf(events.Notify[0].States))
 	}
 
-	for _, notify := range events.Notify {
-		log.Debugf("%+v\n", notify)
-	}
+	//for _, notify := range events.Notify {
+	//	log.Debugf("%+v\n", notify)
+	//}
 
-	log.Infof("newroot: %x, treeSize: %d\n", newroot, treeSize)
+	//log.Infof("newroot: %x, treeSize: %d\n", newroot, treeSize)
 
 	return newroot, treeSize, nil
 }
@@ -843,7 +871,7 @@ func startOGQServer(ctx *cli.Context) error {
 	maxBatchNum = uint32(ctx.Uint(utils.GetFlagName(MaxBatchNumFlag)))
 	offChainMode = ctx.GlobalBool(utils.GetFlagName(OffChainFlag))
 	log.Infof("maxBatchNum : %d", maxBatchNum)
-	log.Infof("offChainMode : %d", offChainMode)
+	log.Infof("offChainMode : %v", offChainMode)
 
 	err := initConfig(ctx)
 	if err != nil {
@@ -897,7 +925,7 @@ func StartRPCServer() error {
 	http.HandleFunc("/", rpc.Handle)
 
 	rpc.HandleFunc("verify", rpcVerify)
-	rpc.HandleFunc("batch_add", rpcBatchAdd)
+	rpc.HandleFunc("batchAdd", rpcBatchAdd)
 
 	err := http.ListenAndServe(":"+strconv.Itoa(DefConfig.ServerPort), nil)
 	if err != nil {
@@ -906,46 +934,64 @@ func StartRPCServer() error {
 	return nil
 }
 
-func convertParamsToHex(params []interface{}) ([]byte, bool) {
-	if len(params) != 1 {
-		return nil, true
+func convertParamsToLeafs(params []interface{}) ([]common.Uint256, error) {
+	leafs := make([]common.Uint256, len(params), len(params))
+
+	for i := uint32(0); i < uint32(len(params)); i++ {
+		s, ok := params[i].(string)
+		if !ok {
+			return nil, errors.New("param should be string. type error.")
+		}
+		leaf, err := HashFromHexString(s)
+		if err != nil {
+			return nil, err
+		}
+		leafs[i] = leaf
 	}
 
-	s, ok := params[0].(string)
-	if !ok {
-		return nil, true
-	}
-
-	hx, err := common.HexToBytes(s)
-	if err != nil {
-		return nil, true
-	}
-	return hx, false
+	return leafs, nil
 }
 
 func rpcVerify(params []interface{}) map[string]interface{} {
-	hx, err := convertParamsToHex(params)
-	if err {
+	if len(params) != 1 {
+		return responsePack(INVALID_PARAM, "")
+	}
+
+	vargs, ok := params[0].(string)
+	if !ok {
+		log.Infof("verify args error")
+		return responsePack(INVALID_PARAM, "")
+	}
+
+	leaf, err := HashFromHexString(vargs)
+	if err != nil {
 		log.Infof("Verify convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
 	}
 
-	source := common.NewZeroCopySource(hx)
-	leaf, eof := source.NextHash()
-	root, eof := source.NextHash()
-	treeSize, eof := source.NextUint32()
-	if eof {
-		log.Infof("Verify param less than require")
-		return responsePack(INVALID_PARAM, "")
-	}
-	// check do not have more byte. accurate to match the args.
-	_, eof = source.NextByte()
-	if !eof {
-		log.Infof("Verify param len overflow")
-		return responsePack(INVALID_PARAM, "")
-	}
-
 	responseCh := make(chan verifyResult)
+	var root common.Uint256
+	var treeSize uint32
+	if offChainMode {
+		MTlock.RLock()
+		root = DefMerkleTree.Root()
+		treeSize = DefMerkleTree.TreeSize()
+		MTlock.RUnlock()
+	} else {
+		for {
+			callCount := 0
+			root, treeSize, err = invokeWasmContract(DefSdk, DefVerifyTx)
+			callCount++
+			if err != nil {
+				if callCount > 3 {
+					log.Infof("call contract failed %s", err)
+					return responsePack(NODE_OUTSERVICE, "")
+				}
+				continue
+			}
+			break
+		}
+	}
 	go Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
 
 	res := <-responseCh
@@ -960,39 +1006,23 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 }
 
 func rpcBatchAdd(params []interface{}) map[string]interface{} {
-	hx, err := convertParamsToHex(params)
-	if err {
+	if uint32(len(params)) > maxBatchNum {
+		log.Errorf("too much elemet. most %d.", maxBatchNum)
+		return responsePack(INVALID_PARAM, "")
+	}
+
+	hashes, err := convertParamsToLeafs(params)
+	if err != nil {
 		log.Infof("batch add convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
-	}
-
-	source := common.NewZeroCopySource(hx)
-	if (source.Size() % common.UINT256_SIZE) != 0 {
-		log.Infof("batchadd args len not mod by UINT256_SIZE, len: %d\n", source.Size())
-		return responsePack(INVALID_PARAM, "")
-	}
-
-	hashes := make([]common.Uint256, 0)
-	leaf, eof := source.NextHash()
-	if eof {
-		log.Info("batchadd args len less UINT256_SIZE\n")
-		return responsePack(INVALID_PARAM, "")
-	}
-	hashes = append(hashes, leaf)
-	for {
-		leaf, eof = source.NextHash()
-		if eof {
-			break
-		}
-		hashes = append(hashes, leaf)
 	}
 
 	var batchstore leveldbstore.LevelDBStore
 	batchstore = *DefStore
 	// can not partial add. chain will not save to storage if contract exec failed.
-	ok := BatchAdd(batchstore, hashes)
-	if ok != nil {
-		log.Infof("batch add failed %s\n", ok)
+	err = BatchAdd(batchstore, hashes)
+	if err != nil {
+		log.Infof("batch add failed %s\n", err)
 		return responsePack(ADDHASH_FAILED, "")
 	}
 
@@ -1076,14 +1106,14 @@ func (self *memHashStore) Flush() error {
 
 func (self *memHashStore) Close() {}
 
-func HashFromHexString(s string) common.Uint256 {
+func HashFromHexString(s string) (common.Uint256, error) {
 	hx, err := common.HexToBytes(s)
 	if err != nil {
-		panic(err)
+		return merkle.EMPTY_HASH, err
 	}
 	res, err := common.Uint256ParseFromBytes(hx)
 	if err != nil {
-		panic(err)
+		return merkle.EMPTY_HASH, err
 	}
-	return res
+	return res, nil
 }
