@@ -4,5 +4,6 @@
 	"ontnode": "http://localhost:20336",
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
-	"contracthexaddr": "8ce5b4c91f89aa72662d5fa9db5ee642b57dfd05"
+	"contracthexaddr": "5973ac37b4084c4027345c2c828c41f831f2e991",
+	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

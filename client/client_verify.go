@@ -155,7 +155,7 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(18500)
+		numbatch := uint32(100000)
 		verifychan := make(chan verifyArg, numbatch)
 		tree := MerkleInit()
 		//var alladdargs []string
@@ -203,7 +203,7 @@ func main() {
 			//}
 			//verifychan <- varg
 
-			root := HashFromHexString("d73f19d2f8f1811edd39c67a3d489e35adf8bb59d8a6eb98aae19fdde97ddd15")
+			root := HashFromHexString("a83dd7f9ff1526aab442785b749bf127f19ec099376bb2fdddff453bf3fe4897")
 			verifylast(client, leafs, root, numbatch*N)
 		}
 		fmt.Printf("prepare args done\n")

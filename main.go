@@ -22,10 +22,12 @@ import (
 	sdk "github.com/ontio/ontology-go-sdk"
 	sdkcom "github.com/ontio/ontology-go-sdk/common"
 
+	"github.com/ontio/ontology-crypto/keypair"
 	"github.com/ontio/ontology/cmd/utils"
 	"github.com/ontio/ontology/common"
 	"github.com/ontio/ontology/common/log"
 	"github.com/ontio/ontology/core/payload"
+	"github.com/ontio/ontology/core/signature"
 	"github.com/ontio/ontology/core/store/leveldbstore"
 	"github.com/ontio/ontology/core/types"
 	utils2 "github.com/ontio/ontology/core/utils"
@@ -58,12 +60,13 @@ var (
 )
 
 type ServerConfig struct {
-	Walletname      string `json:"walletname"`
-	Walletpassword  string `json:"walletpassword"`
-	OntNode         string `json:"ontnode"`
-	SignerAddress   string `json:"signeraddress"`
-	ServerPort      int    `json:"serverport"`
-	ContracthexAddr string `json:"contracthexaddr"`
+	Walletname      string   `json:"walletname"`
+	Walletpassword  string   `json:"walletpassword"`
+	OntNode         string   `json:"ontnode"`
+	SignerAddress   string   `json:"signeraddress"`
+	ServerPort      int      `json:"serverport"`
+	ContracthexAddr string   `json:"contracthexaddr"`
+	Authorize       []string `json:"authorize"`
 }
 
 const (
@@ -72,6 +75,7 @@ const (
 	ADDHASH_FAILED  int64 = 41002
 	VERIFY_FAILED   int64 = 41003
 	NODE_OUTSERVICE int64 = 41004
+	NO_AUTH         int64 = 41005
 )
 
 var ErrMap = map[int64]string{
@@ -80,11 +84,28 @@ var ErrMap = map[int64]string{
 	ADDHASH_FAILED:  "ADDHASH_FAILED",
 	VERIFY_FAILED:   "VERIFY_FAILED",
 	NODE_OUTSERVICE: "NODE_OUTSERVICE",
+	NO_AUTH:         "NO_AUTH",
 }
 
 type TransactionStore struct {
 	lock     sync.Mutex
 	Txhashes map[common.Uint256]bool
+}
+
+func checkAuthorizeOfAddress(address common.Address) bool {
+	for _, s := range DefConfig.Authorize {
+		addr, err := common.AddressFromBase58(s)
+		if err != nil {
+			log.Errorf("server Authorize address convert err.")
+			return false
+		}
+
+		if addr == address {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (self *TransactionStore) AppendTxToStore(tx *types.MutableTransaction, store *leveldbstore.LevelDBStore) error {
@@ -340,7 +361,7 @@ func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*type
 }
 
 func getTxWithArgs(ontSdk *sdk.OntologySdk, args []interface{}) (*types.MutableTransaction, error) {
-	tx, err := utils2.NewWasmVMInvokeTransaction(500, 8000000, contractAddress, args)
+	tx, err := utils2.NewWasmVMInvokeTransaction(0, 8000000, contractAddress, args)
 	if err != nil {
 		return nil, fmt.Errorf("create tx failed: %s", err)
 	}
@@ -940,7 +961,7 @@ func convertParamsToLeafs(params []interface{}) ([]common.Uint256, error) {
 	for i := uint32(0); i < uint32(len(params)); i++ {
 		s, ok := params[i].(string)
 		if !ok {
-			return nil, errors.New("param should be string. type error.")
+			return nil, errors.New("should be string")
 		}
 		leaf, err := HashFromHexString(s)
 		if err != nil {
@@ -952,12 +973,23 @@ func convertParamsToLeafs(params []interface{}) ([]common.Uint256, error) {
 	return leafs, nil
 }
 
-func rpcVerify(params []interface{}) map[string]interface{} {
-	if len(params) != 1 {
-		return responsePack(INVALID_PARAM, "")
+func rpcVerify(rpcparams []interface{}) map[string]interface{} {
+	if uint32(len(rpcparams)) != 3 {
+		return responsePack(INVALID_PARAM, "args len not equal three")
 	}
 
-	vargs, ok := params[0].(string)
+	pubkey, sigData, err := getPublicSigData(rpcparams)
+	if err != nil {
+		log.Infof("%s", err)
+		return responsePack(INVALID_PARAM, "args len not equal three")
+	}
+
+	address := types.AddressFromPubKey(pubkey)
+	if !checkAuthorizeOfAddress(address) {
+		return responsePack(NO_AUTH, "pubkey do not have authorize.")
+	}
+
+	vargs, ok := rpcparams[2].(string)
 	if !ok {
 		log.Infof("verify args error")
 		return responsePack(INVALID_PARAM, "")
@@ -967,6 +999,11 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 	if err != nil {
 		log.Infof("Verify convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
+	}
+
+	err = signature.Verify(pubkey, leaf[:], sigData)
+	if err != nil {
+		return responsePack(NO_AUTH, "Verify failed. request do not have authorize.")
 	}
 
 	responseCh := make(chan verifyResult)
@@ -996,7 +1033,7 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 
 	res := <-responseCh
 
-	log.Infof("Verify leaf :%x, root:%x, treeSize: %d, exist: %v, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
+	log.Debugf("Verify leaf :%x, root:%x, treeSize: %d, exist: %v, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
 	//res, msg := Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
 	if res.err != nil {
 		return responsePack(VERIFY_FAILED, "")
@@ -1005,7 +1042,58 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 	return responseSuccess(res)
 }
 
-func rpcBatchAdd(params []interface{}) map[string]interface{} {
+func interfaceToBytes(t interface{}) ([]byte, error) {
+	publicString, ok := t.(string)
+	if !ok {
+		return nil, errors.New("param should be string")
+	}
+	raw, err := common.HexToBytes(publicString)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// arg[0] pubkey serialization data. arg[1] sigData
+func getPublicSigData(rpcparams []interface{}) (keypair.PublicKey, []byte, error) {
+	if uint32(len(rpcparams)) <= 2 {
+		return nil, nil, errors.New("rpcparams must over three num.")
+	}
+	raw, err := interfaceToBytes(rpcparams[0])
+	if err != nil {
+		return nil, nil, errors.New("Public rawdata to bytes failed.")
+	}
+	pubkey, err := keypair.DeserializePublicKey(raw)
+	if err != nil {
+		return nil, nil, errors.New("DeserializePublicKey failed.")
+	}
+
+	sigData, err := interfaceToBytes(rpcparams[1])
+	if err != nil {
+		return nil, nil, errors.New("sigData args error.")
+	}
+
+	return pubkey, sigData, nil
+}
+
+func rpcBatchAdd(rpcparams []interface{}) map[string]interface{} {
+	if uint32(len(rpcparams)) != 3 {
+		return responsePack(INVALID_PARAM, "args len not equal three")
+	}
+
+	pubkey, sigData, err := getPublicSigData(rpcparams)
+	if err != nil {
+		log.Infof("%s", err)
+		return responsePack(INVALID_PARAM, err)
+	}
+
+	address := types.AddressFromPubKey(pubkey)
+	if !checkAuthorizeOfAddress(address) {
+		return responsePack(NO_AUTH, "pubkey do not have authorize.")
+	}
+
+	params := rpcparams[2].([]interface{})
+
 	if uint32(len(params)) > maxBatchNum {
 		log.Errorf("too much elemet. most %d.", maxBatchNum)
 		return responsePack(INVALID_PARAM, "")
@@ -1015,6 +1103,11 @@ func rpcBatchAdd(params []interface{}) map[string]interface{} {
 	if err != nil {
 		log.Infof("batch add convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
+	}
+
+	err = signature.Verify(pubkey, hashes[0][:], sigData)
+	if err != nil {
+		return responsePack(NO_AUTH, "Verify failed. sigData not right.")
 	}
 
 	var batchstore leveldbstore.LevelDBStore

@@ -15,7 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ontio/ontology-crypto/keypair"
+	sdk "github.com/ontio/ontology-go-sdk"
 	"github.com/ontio/ontology/common"
+	"github.com/ontio/ontology/core/signature"
 	"github.com/ontio/ontology/merkle"
 )
 
@@ -116,6 +119,7 @@ var (
 
 func verifyleaf(client *RpcClient, leafs []common.Uint256) {
 	for i := uint32(0); i < uint32(len(leafs)); i++ {
+		//fmt.Printf("enter Success ")
 		vargs := getVerifyArgs(leafs[i])
 		_, err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
 		if err != nil {
@@ -129,10 +133,14 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256) {
 
 func main() {
 	defer clean()
+	err := InitSigner()
+	if err != nil {
+		panic(err)
+	}
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(10000)
+		numbatch := uint32(1000)
 		tree := MerkleInit()
 		//var alladdargs []string
 		//alladdargs := make([]string, numbatch, numbatch)
@@ -151,21 +159,22 @@ func main() {
 			//root = getleafvroot(leafs, tree, false)
 			//printLeafs("root", root)
 			//tree.AppendHash(leafs[i])
+			//leafvToAddArgs(leafs)
 			addArgs := leafvToAddArgs(leafs)
 			//generateConArgs(leafs)
 			//alladdargs = append(alladdargs, addArgs)
 			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
+
 			verify := false
-
-			if verify {
-
+			if !verify {
 				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 				if err != nil {
 					fmt.Printf("Add Error: %s\n", err)
 					//return
 				}
 			} else {
+				fmt.Printf("%d", m)
 				verifyleaf(client, leafs)
 			}
 		}
@@ -224,18 +233,41 @@ func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree, needro
 }
 
 func leafvToAddArgs(leafs []common.Uint256) []interface{} {
-	addargs := make([]interface{}, 0, len(leafs))
+	addargs := make([]interface{}, 3, 3)
+	leafargs := make([]string, 0, len(leafs))
 
 	for i := range leafs {
-		addargs = append(addargs, hex.EncodeToString(leafs[i][:]))
+		leafargs = append(leafargs, hex.EncodeToString(leafs[i][:]))
+	}
+
+	sigData, err := DefSigner.Sign(leafs[0][:])
+	if err != nil {
+		panic(err)
+	}
+
+	addargs[0] = hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey()))
+	addargs[1] = hex.EncodeToString(sigData)
+	addargs[2] = leafargs
+	err = signature.Verify(DefSigner.GetPublicKey(), leafs[0][:], sigData)
+	if err != nil {
+		panic(err)
 	}
 
 	return addargs
 }
 
 func getVerifyArgs(leaf common.Uint256) []interface{} {
-	vargs := make([]interface{}, 1, 1)
-	vargs[0] = hex.EncodeToString(leaf[:])
+	vargs := make([]interface{}, 3, 3)
+
+	sigData, err := DefSigner.Sign(leaf[:])
+	if err != nil {
+		panic(err)
+	}
+
+	vargs[0] = hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey()))
+	vargs[1] = hex.EncodeToString(sigData)
+	vargs[2] = hex.EncodeToString(leaf[:])
+
 	return vargs
 }
 
@@ -259,4 +291,21 @@ func HashFromHexString(s string) common.Uint256 {
 		panic(err)
 	}
 	return res
+}
+
+var DefSigner sdk.Signer
+
+func InitSigner() error {
+	DefSdk := sdk.NewOntologySdk()
+	wallet, err := DefSdk.OpenWallet("wallet.dat")
+	if err != nil {
+		return fmt.Errorf("error in OpenWallet:%s\n", err)
+	}
+
+	DefSigner, err = wallet.GetAccountByAddress("APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2", []byte("123456"))
+	if err != nil {
+		return fmt.Errorf("error in GetDefaultAccount:%s\n", err)
+	}
+
+	return nil
 }
