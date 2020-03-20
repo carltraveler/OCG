@@ -582,8 +582,7 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore
 				return
 			}
 
-			log.Errorf("TimerChecker: leafv len %d\n", len(leafv))
-			fmt.Printf("TimerChecker: leafv len %d\n", len(leafv))
+			log.Infof("TimerChecker: leafv len %d\n", len(leafv))
 			//for i := range leafv {
 			//	log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
 			//}
@@ -664,73 +663,6 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 		putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 	}
 
-	log.Infof("00 root: %x, treeSize: %d", tmpTree.Root(), tmpTree.TreeSize())
-	treeSizetest := tmpTree.TreeSize()
-	if treeSizetest == 1510656 {
-		if tmpTree.Root() != HashFromHexString("df087947d94a2043a4f25cf9a26e889b051b3e57b1e1b10e7abe07de9623f66e") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 2022656 {
-		if tmpTree.Root() != HashFromHexString("18ddaa510c7179019ae5e493267cf76f441da678ef25c8ad559115abab902006") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 742656 {
-		if tmpTree.Root() != HashFromHexString("12b24639478779239f4297c3d8fc5b541e127d76eb6ead29bde2ef50b65830d8") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 998656 {
-		if tmpTree.Root() != HashFromHexString("470cb49ddca6a74cdee7d5fd9643bc6074b9580378e84de39203141e834381a6") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 1254656 {
-		if tmpTree.Root() != HashFromHexString("3030e254988f9124d8694eeec75398efc0d02fd3b23c7fda317384e19d4d6bc9") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 1510656 {
-		if tmpTree.Root() != HashFromHexString("df087947d94a2043a4f25cf9a26e889b051b3e57b1e1b10e7abe07de9623f66e") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 1766656 {
-		if tmpTree.Root() != HashFromHexString("ef33b4b98c34b22f371886d170a5ab810f48907fc5afd67a5c240a72a037cd06") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 1254656 {
-		if tmpTree.Root() != HashFromHexString("3030e254988f9124d8694eeec75398efc0d02fd3b23c7fda317384e19d4d6bc9") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	} else if treeSizetest == 2176000 {
-		if tmpTree.Root() != HashFromHexString("49d313a9697d8b6ab315ca11d391b695b331fd0b9f8180f99c26dfdb1d93b4b3") {
-			for i := uint32(0); i < uint32(len(leafv)); i++ {
-				log.Errorf("leaf[%d]: %x\n", i, leafv[i])
-			}
-			panic("error root")
-		}
-	}
-
 	if !offChainMode {
 		if newroot != tmpTree.Root() || treeSize != tmpTree.TreeSize() {
 			panic(fmt.Errorf("chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), treeSize, tmpTree.TreeSize()))
@@ -753,7 +685,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	FileHashStore.Flush()
 
 	DefMerkleTree = t
-	//log.Infof("11 root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
+	log.Infof("11 root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
 }
 
 func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
@@ -1006,7 +938,7 @@ func rpcVerify(params []interface{}) map[string]interface{} {
 
 	res := <-responseCh
 
-	log.Infof("Verify leaf :%x, root:%x, treeSize: %d, exist: %d, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
+	log.Infof("Verify leaf :%x, root:%x, treeSize: %d, exist: %v, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
 	//res, msg := Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
 	if res.err != nil {
 		return responsePack(VERIFY_FAILED, "")
