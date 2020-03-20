@@ -207,6 +207,9 @@ func InitCompactMerkleTree() error {
 	FileHashStore = store
 
 	DefMerkleTree = merkle.NewTree(cMTree.TreeSize(), cMTree.Hashes(), store)
+	if DefMerkleTree.TreeSize() == math.MaxUint32 {
+		return errors.New("over max hashes. server stop")
+	}
 	MTlock = new(sync.RWMutex)
 	Existlock = new(sync.Mutex)
 
@@ -591,10 +594,10 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore
 				leafv: leafv,
 				tx:    tx,
 			}
-
-			if uint32(len(txch)) < (TxchCap - TxchCap/5) {
+			if uint32(len(txch)) < TxchCap/2 {
 				txch <- arg
 			} else {
+				log.Infof("txch mostly full.")
 				break
 			}
 		}
@@ -662,6 +665,11 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		//log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
 		tmpTree.AppendHash(leafv[i])
+
+		if tmpTree.TreeSize() == math.MaxUint32 {
+			log.Error("tree full. stop the program.")
+			return
+		}
 		// batch will not commit if failed.
 		putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 	}
@@ -688,7 +696,8 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	FileHashStore.Flush()
 
 	DefMerkleTree = t
-	log.Infof("11 root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
+
+	log.Infof("root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
 }
 
 func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {

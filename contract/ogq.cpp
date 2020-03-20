@@ -15,6 +15,7 @@ class ogq: public contract {
 		
 		void append_hash(H256 leaf) {
 			uint32_t size = hashes.size();
+			check(tree_size != std::numeric_limits<uint32_t>::max(), "tree_size get max uint32" );
 
 			for (auto s = tree_size; s%2 == 1; s = s>>1) {
 				hash_children(hashes[size-1], leaf, leaf);
