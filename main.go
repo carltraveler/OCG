@@ -752,7 +752,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	}
 
 	// transaction success
-	putRootBlockHeight(&store, newroot, blockheight)
+	putRootBlockHeight(&store, tmpTree.Root(), blockheight)
 	TxStore.DeleteTxStore(tx.Hash(), &store)
 	TxStore.UpdateSelfToStore(&store)
 
@@ -787,6 +787,7 @@ type VerifyResult struct {
 	Root        common.Uint256   `json:"root"`
 	TreeSize    uint32           `json:"size"`
 	BlockHeight uint32           `json:"blockheight"`
+	Index       uint32           `json:"index"`
 	Proof       []common.Uint256 `json:"proof"`
 }
 
@@ -801,11 +802,13 @@ func (self VerifyResult) MarshalJSON() ([]byte, error) {
 		Root        string   `json:"root"`
 		TreeSize    uint32   `json:"size"`
 		BlockHeight uint32   `json:"blockheight"`
+		Index       uint32   `json:"index"`
 		Proof       []string `json:"proof"`
 	}{
 		Root:        root,
 		TreeSize:    self.TreeSize,
 		BlockHeight: self.BlockHeight,
+		Index:       self.Index,
 		Proof:       proof,
 	}
 
@@ -817,6 +820,7 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 		Root        string   `json:"root"`
 		TreeSize    uint32   `json:"size"`
 		BlockHeight uint32   `json:"blockheight"`
+		Index       uint32   `json:"index"`
 		Proof       []string `json:"proof"`
 	}{}
 
@@ -837,31 +841,35 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 	}
 
 	self.Root = root
+	self.TreeSize = res.TreeSize
+	self.BlockHeight = res.BlockHeight
+	self.Index = res.Index
 	self.Proof = proof
+
 	return nil
 }
 
-func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, error) {
+func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, uint32, error) {
 	MTlock.RLock()
 	defer MTlock.RUnlock()
 
 	proof, err := GetProof(cMtree, store, leaf, treeSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	verify := merkle.NewMerkleVerifier()
 
 	index, err := getLeafIndex(store, leaf)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	err = verify.VerifyLeafHashInclusion(leaf, index, proof, root, treeSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return proof, nil
+	return proof, index, nil
 }
 
 func main() {
@@ -1078,8 +1086,10 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 			break
 		}
 	}
-	proof, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
+
+	proof, index, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
 	if err != nil {
+		log.Debugf("verify failed %s", err)
 		return responsePack(VERIFY_FAILED, "")
 	}
 
@@ -1087,12 +1097,14 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	blockheight, err = getRootBlockHeight(DefStore, root)
 	MTlock.RUnlock()
 	if err != nil {
+		log.Debugf("get blockheight failed, %s", err)
 		return responsePack(VERIFY_FAILED, "")
 	}
 	res := VerifyResult{
 		Root:        root,
 		TreeSize:    treeSize,
 		BlockHeight: blockheight,
+		Index:       index,
 		Proof:       proof,
 	}
 

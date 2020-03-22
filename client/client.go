@@ -83,7 +83,7 @@ func (this *RpcClient) GetNextQid() string {
 }
 
 //sendRpcRequest send Rpc request to ontology
-func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) error {
+func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (interface{}, error) {
 	rpcReq := &JsonRpcRequest{
 		Version: JSON_RPC_VERSION,
 		Id:      qid,
@@ -92,18 +92,18 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) error
 	}
 	data, err := json.Marshal(rpcReq)
 	if err != nil {
-		return fmt.Errorf("JsonRpcRequest json.Marsha error:%s", err)
+		return nil, fmt.Errorf("JsonRpcRequest json.Marsha error:%s", err)
 	}
 	//fmt.Printf("request: \n%s\n", data)
 	resp, err := this.httpClient.Post(this.addr, "application/json", bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("http post request:%s error:%s", data, err)
+		return nil, fmt.Errorf("http post request:%s error:%s", data, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read rpc response body error:%s", err)
+		return nil, fmt.Errorf("read rpc response body error:%s", err)
 	}
 
 	if method == "batchAdd" {
@@ -111,41 +111,52 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) error
 		rpcRsp := &JsonRpcBatchAddResponse{}
 		err = json.Unmarshal(body, rpcRsp)
 		if err != nil {
-			return fmt.Errorf("json.Unmarshal JsonRpcResponse:%s error:%s", body, err)
+			return nil, fmt.Errorf("json.Unmarshal JsonRpcResponse:%s error:%s", body, err)
 		}
 		if rpcRsp.Error != 0 {
-			return fmt.Errorf("JsonRpcResponse error code:%d desc:%s result:%s", rpcRsp.Error, rpcRsp.Desc, rpcRsp.Result)
+			return nil, fmt.Errorf("JsonRpcResponse error code:%d desc:%s result:%s", rpcRsp.Error, rpcRsp.Desc, rpcRsp.Result)
 		}
 
-		return nil
+		return nil, nil
 	} else if method == "verify" {
-		//fmt.Printf("response:\n%s", string(body))
+		fmt.Printf("response:\n%s", string(body))
 		rpcRsp := &JsonRpcVerifyResponse{}
 		err = json.Unmarshal(body, rpcRsp)
 		if rpcRsp.Error != 0 {
-			return fmt.Errorf("JsonRpcResponse error code:%d desc:%s", rpcRsp.Error, rpcRsp.Desc)
+			return nil, fmt.Errorf("JsonRpcResponse error code:%d desc:%s", rpcRsp.Error, rpcRsp.Desc)
 		}
-		return nil
+		return &rpcRsp.Result, nil
 	}
 
-	return errors.New("error method")
+	return nil, errors.New("error method")
 }
 
 var (
 	N uint32 = 255
 )
 
-func verifyleaf(client *RpcClient, leafs []common.Uint256) {
+func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 	for i := uint32(0); i < uint32(len(leafs)); i++ {
-		//fmt.Printf("enter Success ")
+		fmt.Printf("enter verify")
 		vargs := getVerifyArgs(leafs[i])
-		err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
+		res, err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
 		if err != nil {
 			fmt.Printf("Verify Failed %s\n", err)
 			panic("xxx")
 		}
-	}
 
+		vres, ok := res.(*VerifyResult)
+		if !ok {
+			panic("error type")
+		}
+		if v {
+			err = Verify(vres, leafs[i])
+			if err != nil {
+				panic(err)
+			}
+		}
+		fmt.Printf("success")
+	}
 }
 
 func main() {
@@ -157,7 +168,7 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(10000)
+		numbatch := uint32(10)
 		tree := MerkleInit()
 		//var alladdargs []string
 		//alladdargs := make([]string, numbatch, numbatch)
@@ -185,14 +196,14 @@ func main() {
 
 			verify := true
 			if !verify {
-				err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
+				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 				if err != nil {
 					fmt.Printf("Add Error: %s\n", err)
 					panic("xxxx")
 				}
 			} else {
 				fmt.Printf("%d\n", m)
-				verifyleaf(client, leafs)
+				verifyleaf(client, leafs, true)
 			}
 		}
 		fmt.Printf("prepare args done\n")
@@ -285,6 +296,7 @@ type VerifyResult struct {
 	Root        common.Uint256   `json:"root"`
 	TreeSize    uint32           `json:"size"`
 	BlockHeight uint32           `json:"blockheight"`
+	Index       uint32           `json:"index"`
 	Proof       []common.Uint256 `json:"proof"`
 }
 
@@ -299,11 +311,13 @@ func (self VerifyResult) MarshalJSON() ([]byte, error) {
 		Root        string   `json:"root"`
 		TreeSize    uint32   `json:"size"`
 		BlockHeight uint32   `json:"blockheight"`
+		Index       uint32   `json:"index"`
 		Proof       []string `json:"proof"`
 	}{
 		Root:        root,
 		TreeSize:    self.TreeSize,
 		BlockHeight: self.BlockHeight,
+		Index:       self.Index,
 		Proof:       proof,
 	}
 
@@ -315,6 +329,7 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 		Root        string   `json:"root"`
 		TreeSize    uint32   `json:"size"`
 		BlockHeight uint32   `json:"blockheight"`
+		Index       uint32   `json:"index"`
 		Proof       []string `json:"proof"`
 	}{}
 
@@ -334,7 +349,11 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 	}
 
 	self.Root = root
+	self.TreeSize = res.TreeSize
+	self.BlockHeight = res.BlockHeight
+	self.Index = res.Index
 	self.Proof = proof
+
 	return nil
 }
 
@@ -404,6 +423,16 @@ func InitSigner() error {
 	DefSigner, err = wallet.GetAccountByAddress("APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2", []byte("123456"))
 	if err != nil {
 		return fmt.Errorf("error in GetDefaultAccount:%s\n", err)
+	}
+
+	return nil
+}
+
+func Verify(vres *VerifyResult, leaf common.Uint256) error {
+	verify := merkle.NewMerkleVerifier()
+	err := verify.VerifyLeafHashInclusion(leaf, vres.Index, vres.Proof, vres.Root, vres.TreeSize)
+	if err != nil {
+		return err
 	}
 
 	return nil
