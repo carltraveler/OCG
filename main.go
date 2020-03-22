@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,6 @@ import (
 	"github.com/ontio/ontology/core/store/leveldbstore"
 	"github.com/ontio/ontology/core/types"
 	utils2 "github.com/ontio/ontology/core/utils"
-	"github.com/ontio/ontology/http/base/rpc"
 	"github.com/ontio/ontology/merkle"
 	"github.com/ontio/ontology/smartcontract/states"
 	"github.com/urfave/cli"
@@ -44,6 +44,7 @@ const (
 	PREFIX_MERKLE_TREE DataPrefix = 0x2
 	PREFIX_TX          DataPrefix = 0x3
 	PREFIX_TX_HASH     DataPrefix = 0x4
+	PREFIX_ROOT_HEIGHT DataPrefix = 0x5
 )
 
 const (
@@ -206,11 +207,6 @@ func InitSigner() error {
 		return fmt.Errorf("error in GetDefaultAccount:%s\n", err)
 	}
 
-	DefVerifyTx, err = contractVerifyTransaction(DefSdk)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -306,6 +302,26 @@ func getTransaction(store *leveldbstore.LevelDBStore, txh common.Uint256) (*type
 	return tx, nil
 }
 
+func putRootBlockHeight(store *leveldbstore.LevelDBStore, root common.Uint256, height uint32) {
+	sink := common.NewZeroCopySink(nil)
+	sink.WriteUint32(height)
+	store.BatchPut(GetKeyByHash(PREFIX_ROOT_HEIGHT, root), sink.Bytes())
+}
+
+func getRootBlockHeight(store *leveldbstore.LevelDBStore, root common.Uint256) (uint32, error) {
+	val, err := store.Get(GetKeyByHash(PREFIX_ROOT_HEIGHT, root))
+	if err != nil {
+		return 0, err
+	}
+	source := common.NewZeroCopySource(val)
+	res, eof := source.NextUint32()
+
+	if eof {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return res, nil
+}
+
 func putLeafIndex(store *leveldbstore.LevelDBStore, leaf common.Uint256, index uint32) {
 	sink := common.NewZeroCopySink(nil)
 	sink.WriteUint32(index)
@@ -339,7 +355,7 @@ func hashLeaf(data []byte) common.Uint256 {
 
 func contractVerifyTransaction(ontSdk *sdk.OntologySdk) (*types.MutableTransaction, error) {
 	args := make([]interface{}, 1)
-	args[0] = "batch_add"
+	args[0] = "get_root"
 
 	return getTxWithArgs(ontSdk, args)
 }
@@ -372,36 +388,41 @@ func getTxWithArgs(ontSdk *sdk.OntologySdk, args []interface{}) (*types.MutableT
 	return tx, nil
 }
 
-func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (*sdkcom.SmartContactEvent, error) {
+func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (*sdkcom.SmartContactEvent, uint32, error) {
 	txHash, err := ontSdk.SendTransaction(tx)
 	if err != nil {
-		return nil, fmt.Errorf("send tx failed: %s", err)
+		return nil, 0, fmt.Errorf("send tx failed: %s", err)
 	}
 
 	log.Infof("tx hash : %s", txHash.ToHexString())
 
 	_, err = ontSdk.WaitForGenerateBlock(30 * time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
+		return nil, 0, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
 	}
 
 	events, err := ontSdk.GetSmartContractEvent(txHash.ToHexString())
 	if err != nil {
-		return nil, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
+		return nil, 0, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
+	}
+
+	blockheight, err := ontSdk.GetBlockHeightByTxHash(txHash.ToHexString())
+	if err != nil {
+		return nil, 0, fmt.Errorf("error in  GetBlockHeightByTxHash:%s\n", err)
 	}
 
 	// here Transaction success.
 	if events.State == 0 {
-		return nil, fmt.Errorf("error in events.State is 0 failed.\n")
+		return nil, 0, fmt.Errorf("error in events.State is 0 failed.\n")
 	}
 
-	return events, nil
+	return events, blockheight, nil
 }
 
-func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (common.Uint256, uint32, error) {
-	events, err := invokeWasmContractGetEvent(ontSdk, tx)
+func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (common.Uint256, uint32, uint32, error) {
+	events, blockheight, err := invokeWasmContractGetEvent(ontSdk, tx)
 	if err != nil {
-		return merkle.EMPTY_HASH, 0, err
+		return merkle.EMPTY_HASH, 0, 0, err
 	}
 
 	if len(events.Notify) != 1 {
@@ -436,7 +457,7 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 
 	//log.Infof("newroot: %x, treeSize: %d\n", newroot, treeSize)
 
-	return newroot, treeSize, nil
+	return newroot, treeSize, blockheight, nil
 }
 
 type cacheCh struct {
@@ -688,13 +709,14 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	callCount := 0
 	var newroot common.Uint256
 	var treeSize uint32
+	var blockheight uint32
 
 	log.Debugf("addLeafsToStorage leafs len %d", len(leafv))
 
 	// must the same seq with contract. so here use lock to ensure atomic.
 	if !offChainMode {
 		for {
-			newroot, treeSize, err = invokeWasmContract(ontSdk, tx)
+			newroot, treeSize, blockheight, err = invokeWasmContract(ontSdk, tx)
 			callCount++
 			if err != nil {
 				if callCount > 3 {
@@ -730,6 +752,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	}
 
 	// transaction success
+	putRootBlockHeight(&store, newroot, blockheight)
 	TxStore.DeleteTxStore(tx.Hash(), &store)
 	TxStore.UpdateSelfToStore(&store)
 
@@ -754,53 +777,91 @@ func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 	if err != nil {
 		return nil, err
 	}
+
 	log.Debugf("leaf %x index %d\n", leaf_hash, index)
 
 	return cMtree.InclusionProof(index, treeSize)
 }
 
-type verifyResult struct {
-	exist bool
-	err   error
+type VerifyResult struct {
+	Root        common.Uint256   `json:"root"`
+	TreeSize    uint32           `json:"size"`
+	BlockHeight uint32           `json:"blockheight"`
+	Proof       []common.Uint256 `json:"proof"`
 }
 
-func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, responseCh chan<- verifyResult, leaf common.Uint256, root common.Uint256, treeSize uint32) {
+func (self VerifyResult) MarshalJSON() ([]byte, error) {
+	root := hex.EncodeToString(self.Root[:])
+	proof := make([]string, 0, len(self.Proof))
+	for i := range self.Proof {
+		proof = append(proof, hex.EncodeToString(self.Proof[i][:]))
+	}
+
+	res := struct {
+		Root        string   `json:"root"`
+		TreeSize    uint32   `json:"size"`
+		BlockHeight uint32   `json:"blockheight"`
+		Proof       []string `json:"proof"`
+	}{
+		Root:        root,
+		TreeSize:    self.TreeSize,
+		BlockHeight: self.BlockHeight,
+		Proof:       proof,
+	}
+
+	return json.Marshal(res)
+}
+
+func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
+	res := struct {
+		Root        string   `json:"root"`
+		TreeSize    uint32   `json:"size"`
+		BlockHeight uint32   `json:"blockheight"`
+		Proof       []string `json:"proof"`
+	}{}
+
+	if len(buf) == 0 {
+		return nil
+	}
+
+	json.Unmarshal(buf, &res)
+
+	root, err := HashFromHexString(res.Root)
+	if err != nil {
+		return err
+	}
+
+	proof, err := convertParamsToLeafs(res.Proof)
+	if err != nil {
+		return err
+	}
+
+	self.Root = root
+	self.Proof = proof
+	return nil
+}
+
+func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, error) {
 	MTlock.RLock()
 	defer MTlock.RUnlock()
 
 	proof, err := GetProof(cMtree, store, leaf, treeSize)
 	if err != nil {
-		responseCh <- verifyResult{
-			exist: false,
-			err:   err,
-		}
-		return
+		return nil, err
 	}
 	verify := merkle.NewMerkleVerifier()
 
 	index, err := getLeafIndex(store, leaf)
 	if err != nil {
-		responseCh <- verifyResult{
-			exist: false,
-			err:   err,
-		}
-		return
+		return nil, err
 	}
 
 	err = verify.VerifyLeafHashInclusion(leaf, index, proof, root, treeSize)
 	if err != nil {
-		responseCh <- verifyResult{
-			exist: false,
-			err:   err,
-		}
-		return
+		return nil, err
 	}
 
-	responseCh <- verifyResult{
-		exist: true,
-		err:   err,
-	}
-	return
+	return proof, nil
 }
 
 func main() {
@@ -943,10 +1004,7 @@ func initRPCServer() error {
 }
 
 func StartRPCServer() error {
-	http.HandleFunc("/", rpc.Handle)
-
-	rpc.HandleFunc("verify", rpcVerify)
-	rpc.HandleFunc("batchAdd", rpcBatchAdd)
+	http.HandleFunc("/", RpcHandle)
 
 	err := http.ListenAndServe(":"+strconv.Itoa(DefConfig.ServerPort), nil)
 	if err != nil {
@@ -955,14 +1013,11 @@ func StartRPCServer() error {
 	return nil
 }
 
-func convertParamsToLeafs(params []interface{}) ([]common.Uint256, error) {
+func convertParamsToLeafs(params []string) ([]common.Uint256, error) {
 	leafs := make([]common.Uint256, len(params), len(params))
 
 	for i := uint32(0); i < uint32(len(params)); i++ {
-		s, ok := params[i].(string)
-		if !ok {
-			return nil, errors.New("should be string")
-		}
+		s := params[i]
 		leaf, err := HashFromHexString(s)
 		if err != nil {
 			return nil, err
@@ -973,42 +1028,31 @@ func convertParamsToLeafs(params []interface{}) ([]common.Uint256, error) {
 	return leafs, nil
 }
 
-func rpcVerify(rpcparams []interface{}) map[string]interface{} {
-	if uint32(len(rpcparams)) != 3 {
-		return responsePack(INVALID_PARAM, "args len not equal three")
+func rpcVerify(vargs *RpcParam) map[string]interface{} {
+	if len(vargs.Hashes) != 1 {
+		return responsePack(INVALID_PARAM, "")
 	}
 
-	pubkey, sigData, err := getPublicSigData(rpcparams)
+	pubkey, _, err := getPublicSigData(vargs.PubKey, "")
 	if err != nil {
 		log.Infof("%s", err)
-		return responsePack(INVALID_PARAM, "args len not equal three")
+		return responsePack(INVALID_PARAM, "")
 	}
 
 	address := types.AddressFromPubKey(pubkey)
 	if !checkAuthorizeOfAddress(address) {
-		return responsePack(NO_AUTH, "pubkey do not have authorize.")
+		return responsePack(NO_AUTH, "")
 	}
 
-	vargs, ok := rpcparams[2].(string)
-	if !ok {
-		log.Infof("verify args error")
-		return responsePack(INVALID_PARAM, "")
-	}
-
-	leaf, err := HashFromHexString(vargs)
+	leaf, err := HashFromHexString(vargs.Hashes[0])
 	if err != nil {
 		log.Infof("Verify convert params err: %s\n", err)
 		return responsePack(INVALID_PARAM, "")
 	}
 
-	err = signature.Verify(pubkey, leaf[:], sigData)
-	if err != nil {
-		return responsePack(NO_AUTH, "Verify failed. request do not have authorize.")
-	}
-
-	responseCh := make(chan verifyResult)
 	var root common.Uint256
 	var treeSize uint32
+	var blockheight uint32
 	if offChainMode {
 		MTlock.RLock()
 		root = DefMerkleTree.Root()
@@ -1017,7 +1061,12 @@ func rpcVerify(rpcparams []interface{}) map[string]interface{} {
 	} else {
 		for {
 			callCount := 0
-			root, treeSize, err = invokeWasmContract(DefSdk, DefVerifyTx)
+			DefVerifyTx, err = contractVerifyTransaction(DefSdk)
+			if err != nil {
+				return responsePack(INVALID_PARAM, "")
+			}
+
+			root, treeSize, _, err = invokeWasmContract(DefSdk, DefVerifyTx)
 			callCount++
 			if err != nil {
 				if callCount > 3 {
@@ -1029,62 +1078,54 @@ func rpcVerify(rpcparams []interface{}) map[string]interface{} {
 			break
 		}
 	}
-	go Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
-
-	res := <-responseCh
-
-	log.Debugf("Verify leaf :%x, root:%x, treeSize: %d, exist: %v, msg: %s\n", leaf, root, treeSize, res.exist, res.err)
-	//res, msg := Verify(DefMerkleTree, DefStore, responseCh, leaf, root, treeSize)
-	if res.err != nil {
+	proof, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
+	if err != nil {
 		return responsePack(VERIFY_FAILED, "")
 	}
+
+	MTlock.RLock()
+	blockheight, err = getRootBlockHeight(DefStore, root)
+	MTlock.RUnlock()
+	if err != nil {
+		return responsePack(VERIFY_FAILED, "")
+	}
+	res := VerifyResult{
+		Root:        root,
+		TreeSize:    treeSize,
+		BlockHeight: blockheight,
+		Proof:       proof,
+	}
+
+	log.Debugf("Verify leaf ok :%x, root:%x, treeSize: %d\n", leaf, root, treeSize)
 
 	return responseSuccess(res)
 }
 
-func interfaceToBytes(t interface{}) ([]byte, error) {
-	publicString, ok := t.(string)
-	if !ok {
-		return nil, errors.New("param should be string")
-	}
-	raw, err := common.HexToBytes(publicString)
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
 // arg[0] pubkey serialization data. arg[1] sigData
-func getPublicSigData(rpcparams []interface{}) (keypair.PublicKey, []byte, error) {
-	if uint32(len(rpcparams)) <= 2 {
-		return nil, nil, errors.New("rpcparams must over three num.")
-	}
-	raw, err := interfaceToBytes(rpcparams[0])
+func getPublicSigData(pubs string, sigs string) (keypair.PublicKey, []byte, error) {
+	raw, err := common.HexToBytes(pubs)
 	if err != nil {
-		return nil, nil, errors.New("Public rawdata to bytes failed.")
+		return nil, nil, err
 	}
+
 	pubkey, err := keypair.DeserializePublicKey(raw)
 	if err != nil {
 		return nil, nil, errors.New("DeserializePublicKey failed.")
 	}
 
-	sigData, err := interfaceToBytes(rpcparams[1])
+	sigData, err := common.HexToBytes(sigs)
 	if err != nil {
-		return nil, nil, errors.New("sigData args error.")
+		return nil, nil, err
 	}
 
 	return pubkey, sigData, nil
 }
 
-func rpcBatchAdd(rpcparams []interface{}) map[string]interface{} {
-	if uint32(len(rpcparams)) != 3 {
-		return responsePack(INVALID_PARAM, "args len not equal three")
-	}
-
-	pubkey, sigData, err := getPublicSigData(rpcparams)
+func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
+	pubkey, sigData, err := getPublicSigData(addargs.PubKey, addargs.Sigature)
 	if err != nil {
 		log.Infof("%s", err)
-		return responsePack(INVALID_PARAM, err)
+		return responsePack(INVALID_PARAM, err.Error())
 	}
 
 	address := types.AddressFromPubKey(pubkey)
@@ -1092,17 +1133,17 @@ func rpcBatchAdd(rpcparams []interface{}) map[string]interface{} {
 		return responsePack(NO_AUTH, "pubkey do not have authorize.")
 	}
 
-	params := rpcparams[2].([]interface{})
+	params := addargs.Hashes
 
-	if uint32(len(params)) > maxBatchNum {
-		log.Errorf("too much elemet. most %d.", maxBatchNum)
-		return responsePack(INVALID_PARAM, "")
+	if uint32(len(params)) > maxBatchNum || uint32(len(params)) == 0 {
+		log.Errorf("too much elemet. most %d. or empty.", maxBatchNum)
+		return responsePack(INVALID_PARAM, "too much or empty hashes")
 	}
 
 	hashes, err := convertParamsToLeafs(params)
 	if err != nil {
 		log.Infof("batch add convert params err: %s\n", err)
-		return responsePack(INVALID_PARAM, "")
+		return responsePack(INVALID_PARAM, err.Error())
 	}
 
 	err = signature.Verify(pubkey, hashes[0][:], sigData)
@@ -1112,14 +1153,13 @@ func rpcBatchAdd(rpcparams []interface{}) map[string]interface{} {
 
 	var batchstore leveldbstore.LevelDBStore
 	batchstore = *DefStore
-	// can not partial add. chain will not save to storage if contract exec failed.
 	err = BatchAdd(batchstore, hashes)
 	if err != nil {
 		log.Infof("batch add failed %s\n", err)
-		return responsePack(ADDHASH_FAILED, "")
+		return responsePack(ADDHASH_FAILED, err.Error())
 	}
 
-	return responseSuccess("Add Success")
+	return responseSuccess("Cached Success")
 }
 
 func responseSuccess(result interface{}) map[string]interface{} {

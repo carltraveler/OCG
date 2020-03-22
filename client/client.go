@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -27,18 +28,25 @@ const JSON_RPC_VERSION = "2.0"
 
 //JsonRpcRequest object in rpc
 type JsonRpcRequest struct {
-	Version string        `json:"jsonrpc"`
-	Id      string        `json:"id"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
+	Version string   `json:"jsonrpc"`
+	Id      string   `json:"id"`
+	Method  string   `json:"method"`
+	Params  RpcParam `json:"params"`
 }
 
 //JsonRpcResponse object response for JsonRpcRequest
-type JsonRpcResponse struct {
-	Id     string          `json:"id"`
-	Error  int64           `json:"error"`
-	Desc   string          `json:"desc"`
-	Result json.RawMessage `json:"result"`
+type JsonRpcBatchAddResponse struct {
+	Id     string `json:"id"`
+	Error  int64  `json:"error"`
+	Desc   string `json:"desc"`
+	Result string `json:"result"`
+}
+
+type JsonRpcVerifyResponse struct {
+	Id     string       `json:"id"`
+	Error  int64        `json:"error"`
+	Desc   string       `json:"desc"`
+	Result VerifyResult `json:"result"`
 }
 
 //RpcClient for ontology rpc api
@@ -75,7 +83,7 @@ func (this *RpcClient) GetNextQid() string {
 }
 
 //sendRpcRequest send Rpc request to ontology
-func (this *RpcClient) sendRpcRequest(qid, method string, params []interface{}) ([]byte, error) {
+func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) error {
 	rpcReq := &JsonRpcRequest{
 		Version: JSON_RPC_VERSION,
 		Id:      qid,
@@ -84,33 +92,43 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params []interface{}) 
 	}
 	data, err := json.Marshal(rpcReq)
 	if err != nil {
-		return nil, fmt.Errorf("JsonRpcRequest json.Marsha error:%s", err)
+		return fmt.Errorf("JsonRpcRequest json.Marsha error:%s", err)
 	}
+	//fmt.Printf("request: \n%s\n", data)
 	resp, err := this.httpClient.Post(this.addr, "application/json", bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("http post request:%s error:%s", data, err)
+		return fmt.Errorf("http post request:%s error:%s", data, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read rpc response body error:%s", err)
+		return fmt.Errorf("read rpc response body error:%s", err)
 	}
-	rpcRsp := &JsonRpcResponse{}
-	err = json.Unmarshal(body, rpcRsp)
-	if err != nil {
-		return nil, fmt.Errorf("json.Unmarshal JsonRpcResponse:%s error:%s", body, err)
-	}
-	if rpcRsp.Error != 0 {
-		return nil, fmt.Errorf("JsonRpcResponse error code:%d desc:%s result:%s", rpcRsp.Error, rpcRsp.Desc, rpcRsp.Result)
-	}
-	return rpcRsp.Result, nil
-}
 
-type verifyArg struct {
-	Leafs []common.Uint256
-	Root  []common.Uint256
-	M     uint32
+	if method == "batchAdd" {
+		//fmt.Printf("response:\n%s", string(body))
+		rpcRsp := &JsonRpcBatchAddResponse{}
+		err = json.Unmarshal(body, rpcRsp)
+		if err != nil {
+			return fmt.Errorf("json.Unmarshal JsonRpcResponse:%s error:%s", body, err)
+		}
+		if rpcRsp.Error != 0 {
+			return fmt.Errorf("JsonRpcResponse error code:%d desc:%s result:%s", rpcRsp.Error, rpcRsp.Desc, rpcRsp.Result)
+		}
+
+		return nil
+	} else if method == "verify" {
+		//fmt.Printf("response:\n%s", string(body))
+		rpcRsp := &JsonRpcVerifyResponse{}
+		err = json.Unmarshal(body, rpcRsp)
+		if rpcRsp.Error != 0 {
+			return fmt.Errorf("JsonRpcResponse error code:%d desc:%s", rpcRsp.Error, rpcRsp.Desc)
+		}
+		return nil
+	}
+
+	return errors.New("error method")
 }
 
 var (
@@ -121,12 +139,11 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256) {
 	for i := uint32(0); i < uint32(len(leafs)); i++ {
 		//fmt.Printf("enter Success ")
 		vargs := getVerifyArgs(leafs[i])
-		_, err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
+		err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
 		if err != nil {
 			fmt.Printf("Verify Failed %s\n", err)
 			panic("xxx")
 		}
-		//fmt.Printf("Verify Success %s\n", string(res))
 	}
 
 }
@@ -140,7 +157,7 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(1000)
+		numbatch := uint32(10000)
 		tree := MerkleInit()
 		//var alladdargs []string
 		//alladdargs := make([]string, numbatch, numbatch)
@@ -166,15 +183,15 @@ func main() {
 			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
 
-			verify := false
+			verify := true
 			if !verify {
-				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
+				err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 				if err != nil {
 					fmt.Printf("Add Error: %s\n", err)
-					//return
+					panic("xxxx")
 				}
 			} else {
-				fmt.Printf("%d", m)
+				fmt.Printf("%d\n", m)
 				verifyleaf(client, leafs)
 			}
 		}
@@ -232,8 +249,13 @@ func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree, needro
 	return root
 }
 
-func leafvToAddArgs(leafs []common.Uint256) []interface{} {
-	addargs := make([]interface{}, 3, 3)
+type RpcParam struct {
+	PubKey   string   `json:"pubKey"`
+	Sigature string   `json:"signature"`
+	Hashes   []string `json:"hashes"`
+}
+
+func leafvToAddArgs(leafs []common.Uint256) RpcParam {
 	leafargs := make([]string, 0, len(leafs))
 
 	for i := range leafs {
@@ -245,9 +267,12 @@ func leafvToAddArgs(leafs []common.Uint256) []interface{} {
 		panic(err)
 	}
 
-	addargs[0] = hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey()))
-	addargs[1] = hex.EncodeToString(sigData)
-	addargs[2] = leafargs
+	addargs := RpcParam{
+		PubKey:   hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey())),
+		Sigature: hex.EncodeToString(sigData),
+		Hashes:   leafargs,
+	}
+
 	err = signature.Verify(DefSigner.GetPublicKey(), leafs[0][:], sigData)
 	if err != nil {
 		panic(err)
@@ -256,17 +281,91 @@ func leafvToAddArgs(leafs []common.Uint256) []interface{} {
 	return addargs
 }
 
-func getVerifyArgs(leaf common.Uint256) []interface{} {
-	vargs := make([]interface{}, 3, 3)
+type VerifyResult struct {
+	Root        common.Uint256   `json:"root"`
+	TreeSize    uint32           `json:"size"`
+	BlockHeight uint32           `json:"blockheight"`
+	Proof       []common.Uint256 `json:"proof"`
+}
 
-	sigData, err := DefSigner.Sign(leaf[:])
-	if err != nil {
-		panic(err)
+func (self VerifyResult) MarshalJSON() ([]byte, error) {
+	root := hex.EncodeToString(self.Root[:])
+	proof := make([]string, 0, len(self.Proof))
+	for i := range self.Proof {
+		proof = append(proof, hex.EncodeToString(self.Proof[i][:]))
 	}
 
-	vargs[0] = hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey()))
-	vargs[1] = hex.EncodeToString(sigData)
-	vargs[2] = hex.EncodeToString(leaf[:])
+	res := struct {
+		Root        string   `json:"root"`
+		TreeSize    uint32   `json:"size"`
+		BlockHeight uint32   `json:"blockheight"`
+		Proof       []string `json:"proof"`
+	}{
+		Root:        root,
+		TreeSize:    self.TreeSize,
+		BlockHeight: self.BlockHeight,
+		Proof:       proof,
+	}
+
+	return json.Marshal(res)
+}
+
+func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
+	res := struct {
+		Root        string   `json:"root"`
+		TreeSize    uint32   `json:"size"`
+		BlockHeight uint32   `json:"blockheight"`
+		Proof       []string `json:"proof"`
+	}{}
+
+	if len(buf) == 0 {
+		return nil
+	}
+
+	json.Unmarshal(buf, &res)
+
+	root, err := HashFromHexString(res.Root)
+	if err != nil {
+		return err
+	}
+	proof, err := convertParamsToLeafs(res.Proof)
+	if err != nil {
+		return err
+	}
+
+	self.Root = root
+	self.Proof = proof
+	return nil
+}
+
+func convertParamsToLeafs(params []string) ([]common.Uint256, error) {
+	leafs := make([]common.Uint256, len(params), len(params))
+
+	for i := uint32(0); i < uint32(len(params)); i++ {
+		s := params[i]
+		leaf, err := HashFromHexString(s)
+		if err != nil {
+			return nil, err
+		}
+		leafs[i] = leaf
+	}
+
+	return leafs, nil
+}
+
+func getVerifyArgs(leaf common.Uint256) RpcParam {
+	leafs := make([]string, 1, 1)
+	leafs[0] = hex.EncodeToString(leaf[:])
+
+	//sigData, err := DefSigner.Sign(leaf[:])
+	//if err != nil {
+	//	panic(err)
+	//}
+
+	vargs := RpcParam{
+		PubKey: hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey())),
+		Hashes: leafs,
+	}
 
 	return vargs
 }
@@ -281,16 +380,16 @@ func printLeafs(prefix string, leafs []common.Uint256) {
 	}
 }
 
-func HashFromHexString(s string) common.Uint256 {
+func HashFromHexString(s string) (common.Uint256, error) {
 	hx, err := common.HexToBytes(s)
 	if err != nil {
-		panic(err)
+		return merkle.EMPTY_HASH, err
 	}
 	res, err := common.Uint256ParseFromBytes(hx)
 	if err != nil {
-		panic(err)
+		return merkle.EMPTY_HASH, err
 	}
-	return res
+	return res, nil
 }
 
 var DefSigner sdk.Signer
