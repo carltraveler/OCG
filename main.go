@@ -27,6 +27,7 @@ import (
 	"github.com/ontio/ontology/cmd/utils"
 	"github.com/ontio/ontology/common"
 	"github.com/ontio/ontology/common/log"
+	"github.com/ontio/ontology/common/password"
 	"github.com/ontio/ontology/core/payload"
 	"github.com/ontio/ontology/core/signature"
 	"github.com/ontio/ontology/core/store/leveldbstore"
@@ -62,7 +63,6 @@ var (
 
 type ServerConfig struct {
 	Walletname      string   `json:"walletname"`
-	Walletpassword  string   `json:"walletpassword"`
 	OntNode         string   `json:"ontnode"`
 	SignerAddress   string   `json:"signeraddress"`
 	ServerPort      int      `json:"serverport"`
@@ -202,7 +202,12 @@ func InitSigner() error {
 		return fmt.Errorf("error in OpenWallet:%s\n", err)
 	}
 
-	DefSigner, err = wallet.GetAccountByAddress(DefConfig.SignerAddress, []byte(DefConfig.Walletpassword))
+	passwd, err := password.GetAccountPassword()
+	if err != nil {
+		return fmt.Errorf("input password error %s", err)
+	}
+
+	DefSigner, err = wallet.GetAccountByAddress(DefConfig.SignerAddress, passwd)
 	if err != nil {
 		return fmt.Errorf("error in GetDefaultAccount:%s\n", err)
 	}

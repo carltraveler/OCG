@@ -1,6 +1,5 @@
 {
 	"walletname": "./wallet.dat",
-	"walletpassword": "123456",
 	"ontnode": "http://localhost:20336",
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
