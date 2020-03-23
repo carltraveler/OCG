@@ -41,11 +41,12 @@ import (
 type DataPrefix byte
 
 const (
-	PREFIX_INDEX       DataPrefix = 0x1
-	PREFIX_MERKLE_TREE DataPrefix = 0x2
-	PREFIX_TX          DataPrefix = 0x3
-	PREFIX_TX_HASH     DataPrefix = 0x4
-	PREFIX_ROOT_HEIGHT DataPrefix = 0x5
+	PREFIX_INDEX            DataPrefix = 0x1
+	PREFIX_MERKLE_TREE      DataPrefix = 0x2
+	PREFIX_TX               DataPrefix = 0x3
+	PREFIX_TX_HASH          DataPrefix = 0x4
+	PREFIX_ROOT_HEIGHT      DataPrefix = 0x5
+	PREFIX_LATEST_FAILED_TX DataPrefix = 0x6
 )
 
 const (
@@ -56,9 +57,10 @@ const (
 )
 
 var (
-	maxBatchNum     uint32
-	offChainMode    bool
-	contractAddress common.Address
+	maxBatchNum             uint32
+	offChainMode            bool
+	contractAddress         common.Address
+	NeedCheckLatestFailedTx bool
 )
 
 type ServerConfig struct {
@@ -274,6 +276,39 @@ func InitCompactMerkleTree() error {
 func SaveCompactMerkleTree(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore) {
 	rawTree, _ := cMtree.Marshal()
 	store.BatchPut(GetKeyByHash(PREFIX_MERKLE_TREE, merkle.EMPTY_HASH), rawTree)
+}
+
+func putLatestFailedTx(store *leveldbstore.LevelDBStore, tx *types.MutableTransaction) error {
+	sink := common.NewZeroCopySink(nil)
+	imtx, err := tx.IntoImmutable()
+	if err != nil {
+		return err
+	}
+
+	imtx.Serialization(sink)
+	store.BatchPut(GetKeyByHash(PREFIX_LATEST_FAILED_TX, merkle.EMPTY_HASH), sink.Bytes())
+	return nil
+}
+
+func getLatestFailedTx(store *leveldbstore.LevelDBStore) (*types.MutableTransaction, error) {
+	var imtx types.Transaction
+	raw, err := store.Get(GetKeyByHash(PREFIX_LATEST_FAILED_TX, merkle.EMPTY_HASH))
+	if err != nil {
+		return nil, err
+	}
+
+	source := common.NewZeroCopySource(raw)
+	imtx.Deserialization(source)
+	tx, err := imtx.IntoMutable()
+	if err != nil {
+		return nil, err
+	}
+
+	return tx, nil
+}
+
+func delLatestFailedTx(store *leveldbstore.LevelDBStore) {
+	store.BatchDelete(GetKeyByHash(PREFIX_LATEST_FAILED_TX, merkle.EMPTY_HASH))
 }
 
 func putTransaction(store *leveldbstore.LevelDBStore, tx *types.MutableTransaction) error {
@@ -730,6 +765,22 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 		return
 	}
 
+	if NeedCheckLatestFailedTx {
+		ltx, _ := getLatestFailedTx(&store)
+		if ltx != nil {
+			oldtx := tx
+			oldleavf := leafv
+			tx = ltx
+			leafv, err = leafvFromTx(tx)
+			if err != nil {
+				tx = oldtx
+				leafv = oldleavf
+				panic("latest tx anlyze failed")
+			}
+		}
+		NeedCheckLatestFailedTx = false
+	}
+
 	var newroot common.Uint256
 	var treeSize uint32
 	var blockheight uint32
@@ -744,38 +795,39 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 
 			log.Info("call contract failed. need handled by manual to check the ontology node issue.")
 			Existlock.Lock()
-			var batchstore leveldbstore.LevelDBStore
-			batchstore = *DefStore
-			for {
-				// if contruct new tx failed. just save for restart try. txhash all already failed onchain.
-				if blockheight == 1 {
-					log.Infof("old tx exec failed. may your ong not enough. change it. than restart server later")
-					newtx, err := constructTransation(DefSdk, leafv)
-					if err != nil {
-						log.Infof("storage contruct new tx failed %s", err)
-						break
-					}
-
-					err = TxStore.AppendTxToStore(newtx, &batchstore)
-					if err != nil {
-						log.Infof("storage AppendTxToStore failed %s", err)
-						break
-					}
-
-					// append success. delete old tx
-					TxStore.DeleteTxStore(tx.Hash(), &store)
-					TxStore.UpdateSelfToStore(&store)
-					store.BatchCommit()
+			// if contruct new tx failed. just save for restart try. txhash all already failed onchain.
+			if blockheight == 1 {
+				log.Infof("old tx exec failed. may your ong not enough. change it. than restart server later")
+				newtx, err := constructTransation(DefSdk, leafv)
+				if err != nil {
+					log.Infof("leave the old tx. storage contruct new tx failed %s", err)
 				}
 
-				break
+				err = TxStore.AppendTxToStore(newtx, &store)
+				if err != nil {
+					log.Infof("leave the old tx.storage AppendTxToStore failed %s", err)
+				}
+
+				// append success. delete old tx
+				if err == nil {
+					TxStore.DeleteTxStore(tx.Hash(), &store)
+					tx = newtx
+				}
 			}
 
+			// some kind is. if the tx success. invoke failed. so invoke again when restart to check first must. because the append seq must be same with onchain.
+			// and if failed. construct newtx to check. last failed tx if exec success.
 			log.Infof("your ontology node happens error. need stop program to check your node. and then restart the program. call contract failed %s.", err)
-			batchstore.NewBatch()
-			SaveCompactMerkleTree(DefMerkleTree, &batchstore)
-			TxStore.UpdateSelfToStore(&batchstore)
-			batchstore.BatchCommit()
+			putLatestFailedTx(&store, tx)
+			TxStore.UpdateSelfToStore(&store)
+			SaveCompactMerkleTree(DefMerkleTree, &store)
+			// only if commit failed the failed tx will not drop. but will out off order. be carefull
+			err = store.BatchCommit()
+			if err != nil {
+				panic("panic 0000")
+			}
+
+			//  newtx noneed stored.
 			os.Exit(1)
 			Existlock.Unlock()
 		}
@@ -1014,6 +1066,7 @@ func startOGQServer(ctx *cli.Context) error {
 	offChainMode = ctx.GlobalBool(utils.GetFlagName(OffChainFlag))
 	log.Infof("maxBatchNum : %d", maxBatchNum)
 	log.Infof("offChainMode : %v", offChainMode)
+	NeedCheckLatestFailedTx = true
 
 	err := initConfig(ctx)
 	if err != nil {
