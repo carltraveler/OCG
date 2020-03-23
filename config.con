@@ -5,6 +5,6 @@
 	"serverport": 32339,
 	"gasprice": 500,
 	"cachetime": 10,
-	"contracthexaddr": "5973ac37b4084c4027345c2c828c41f831f2e991",
+	"contracthexaddr": "c0377ed4395af6aae32033febe63102e8cd3017b",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

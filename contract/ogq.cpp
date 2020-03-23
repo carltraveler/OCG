@@ -42,6 +42,12 @@ class ogq: public contract {
 	key merkletree_key = make_key("merkletree_key");
 	address admin = base58toaddress("APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2");
 
+	struct root_size {
+		H256 root;
+		uint32_t tree_size;
+        ONTLIB_SERIALIZE(root_size, (root)(tree_size))
+	};
+
 	void notify_if_failed(bool cond, const char *msg) {
 		if (not cond) {
 			notify_event<string>(msg);
@@ -121,11 +127,15 @@ class ogq: public contract {
 	}
 
 
-	void get_root(void) {
+	root_size get_root(void) {
 		CompactMerkleTree ogq_tree;
 		notify_if_failed(storage_get(merkletree_key, ogq_tree), "get merkletree_key failed");
 		auto root = get_root_inner(ogq_tree);
+		root_size t;
+		t.root = root;
+		t.tree_size = ogq_tree.tree_size;
 		notify_event(root, ogq_tree.tree_size);
+		return t;
 	}
 
 	void contract_migrate(vector<char> code) {

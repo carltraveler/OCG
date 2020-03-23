@@ -121,6 +121,7 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (inte
 	} else if method == "verify" {
 		fmt.Printf("response:\n%s", string(body))
 		rpcRsp := &JsonRpcVerifyResponse{}
+		fmt.Printf("%v\n", rpcRsp)
 		err = json.Unmarshal(body, rpcRsp)
 		if rpcRsp.Error != 0 {
 			return nil, fmt.Errorf("JsonRpcResponse error code:%d desc:%s", rpcRsp.Error, rpcRsp.Desc)
@@ -168,7 +169,7 @@ func main() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
 	if true {
-		numbatch := uint32(10)
+		numbatch := uint32(1000)
 		tree := MerkleInit()
 		//var alladdargs []string
 		//alladdargs := make([]string, numbatch, numbatch)
@@ -194,7 +195,7 @@ func main() {
 			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
 
-			verify := true
+			verify := false
 			if !verify {
 				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 				if err != nil {
@@ -429,6 +430,7 @@ func InitSigner() error {
 }
 
 func Verify(vres *VerifyResult, leaf common.Uint256) error {
+	fmt.Printf("%v", vres)
 	verify := merkle.NewMerkleVerifier()
 	err := verify.VerifyLeafHashInclusion(leaf, vres.Index, vres.Proof, vres.Root, vres.TreeSize)
 	if err != nil {

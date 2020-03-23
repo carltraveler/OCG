@@ -396,7 +396,22 @@ func getTxWithArgs(ontSdk *sdk.OntologySdk, args []interface{}) (*types.MutableT
 }
 
 func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (*sdkcom.SmartContactEvent, uint32, error) {
-	txHash, err := ontSdk.SendTransaction(tx)
+	txHash := tx.Hash()
+	events0, err := ontSdk.GetSmartContractEvent(txHash.ToHexString())
+	// tx have send before. so can get event with nil.
+	if err == nil && events0 != nil {
+		if events0.State == 0 {
+			return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
+		}
+
+		blockheight, err := ontSdk.GetBlockHeightByTxHash(txHash.ToHexString())
+		if err != nil {
+			return nil, 0, fmt.Errorf("error in  GetBlockHeightByTxHash:%s\n", err)
+		}
+		return events0, blockheight, nil
+	}
+
+	_, err = ontSdk.SendTransaction(tx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("send tx failed: %s", err)
 	}
@@ -427,13 +442,20 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 }
 
 func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (common.Uint256, uint32, uint32, error) {
-	events, blockheight, err := invokeWasmContractGetEvent(ontSdk, tx)
-	if err != nil {
-		return merkle.EMPTY_HASH, 0, 0, err
-	}
-
-	if len(events.Notify) != 1 {
-		log.Errorf("notify should be len 1, len: %d\n", len(events.Notify))
+	var events *sdkcom.SmartContactEvent
+	var blockheight uint32
+	var err error
+	call_count := 0
+	for {
+		events, blockheight, err = invokeWasmContractGetEvent(ontSdk, tx)
+		if err != nil {
+			if call_count < 3 {
+				call_count++
+				continue
+			}
+			return merkle.EMPTY_HASH, blockheight, 0, err
+		}
+		break
 	}
 
 	var newroot common.Uint256
@@ -441,28 +463,22 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 	switch val := events.Notify[0].States.(type) {
 	case []interface{}:
 		if len(val) != 2 {
-			log.Errorf("states len should be len 2, len: %d\n", len(val))
+			return merkle.EMPTY_HASH, 0, 0, fmt.Errorf("states len err should len 2, now len %d, %v", len(val), val)
 		}
 
 		newroot, err = common.Uint256FromHexString(val[0].(string))
 		if err != nil {
-			log.Errorf("notify return err %s\n", err)
+			return merkle.EMPTY_HASH, 0, 0, fmt.Errorf("notify return err %s\n", err)
 		}
 
 		t, err := strconv.Atoi(val[1].(string))
 		if err != nil {
-			log.Errorf("notify return err %s\n", err)
+			return merkle.EMPTY_HASH, 0, 0, fmt.Errorf("notify return err %s\n", err)
 		}
 		treeSize = uint32(t)
 	default:
-		log.Errorf("notify supported type err %s\n", reflect.TypeOf(events.Notify[0].States))
+		return merkle.EMPTY_HASH, 0, 0, fmt.Errorf("notify supported type err %s\n", reflect.TypeOf(events.Notify[0].States))
 	}
-
-	//for _, notify := range events.Notify {
-	//	log.Debugf("%+v\n", notify)
-	//}
-
-	//log.Infof("newroot: %x, treeSize: %d\n", newroot, treeSize)
 
 	return newroot, treeSize, blockheight, nil
 }
@@ -559,9 +575,8 @@ func ledgerAppendTx(store leveldbstore.LevelDBStore, leafv []common.Uint256) err
 func ledgerAppendTxRoll(store leveldbstore.LevelDBStore, leafv []common.Uint256) error {
 	err := ledgerAppendTx(store, leafv)
 	if err != nil {
-		log.Errorf("ledgerAppendTxRoll err : %s", err)
+		log.Infof("ledgerAppendTxRoll err : %s", err)
 		for i := uint32(0); i < uint32(len(leafv)); i++ {
-			log.Infof("cacheLeafs timer. leaf: %x failed", leafv[i])
 			delLeafIndex(DefStore, leafv[i])
 		}
 	}
@@ -664,7 +679,7 @@ func TxStoreTimeChecker(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore
 				return
 			}
 
-			log.Infof("TimerChecker: leafv len %d\n", len(leafv))
+			//log.Infof("TimerChecker: leafv len %d\n", len(leafv))
 			//for i := range leafv {
 			//	log.Debugf("TimerChecker: leafv[%d]: %x\n", i, leafv[i])
 			//}
@@ -715,7 +730,6 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 		return
 	}
 
-	callCount := 0
 	var newroot common.Uint256
 	var treeSize uint32
 	var blockheight uint32
@@ -724,18 +738,46 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 
 	// must the same seq with contract. so here use lock to ensure atomic.
 	if !offChainMode {
-		for {
-			newroot, treeSize, blockheight, err = invokeWasmContract(ontSdk, tx)
-			callCount++
-			if err != nil {
-				if callCount > 3 {
-					log.Infof("call contract failed %s", err)
-					return
+		newroot, treeSize, blockheight, err = invokeWasmContract(ontSdk, tx)
+		if err != nil {
+			// use blockheight == 1 to check tx exec failed. that is state is 0. so the tx can not send again. need delete the current tx. and construct new tx. mostly this is caused by no more ong. charge the money.
+
+			log.Info("call contract failed. need handled by manual to check the ontology node issue.")
+			Existlock.Lock()
+			var batchstore leveldbstore.LevelDBStore
+			batchstore = *DefStore
+			for {
+				// if contruct new tx failed. just save for restart try. txhash all already failed onchain.
+				if blockheight == 1 {
+					log.Infof("old tx exec failed. may your ong not enough. change it. than restart server later")
+					newtx, err := constructTransation(DefSdk, leafv)
+					if err != nil {
+						log.Infof("storage contruct new tx failed %s", err)
+						break
+					}
+
+					err = TxStore.AppendTxToStore(newtx, &batchstore)
+					if err != nil {
+						log.Infof("storage AppendTxToStore failed %s", err)
+						break
+					}
+
+					// append success. delete old tx
+					TxStore.DeleteTxStore(tx.Hash(), &store)
+					TxStore.UpdateSelfToStore(&store)
+					store.BatchCommit()
 				}
-				continue
+
+				break
 			}
 
-			break
+			log.Infof("your ontology node happens error. need stop program to check your node. and then restart the program. call contract failed %s.", err)
+			batchstore.NewBatch()
+			SaveCompactMerkleTree(DefMerkleTree, &batchstore)
+			TxStore.UpdateSelfToStore(&batchstore)
+			batchstore.BatchCommit()
+			os.Exit(1)
+			Existlock.Unlock()
 		}
 	}
 
@@ -743,13 +785,11 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
 
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
-		//log.Debugf("addLeafsToStorage: leafv[%d]: %x", i, leafv[i])
-		tmpTree.AppendHash(leafv[i])
-
 		if tmpTree.TreeSize() == math.MaxUint32 {
-			log.Error("tree full. stop the program.")
+			log.Errorf("tree full. stop the program.")
 			return
 		}
+		tmpTree.AppendHash(leafv[i])
 		// batch will not commit if failed.
 		putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 	}
@@ -980,12 +1020,12 @@ func startOGQServer(ctx *cli.Context) error {
 		return err
 	}
 
-	err = InitCompactMerkleTree()
+	err = InitSigner()
 	if err != nil {
 		return err
 	}
 
-	err = InitSigner()
+	err = InitCompactMerkleTree()
 	if err != nil {
 		return err
 	}
@@ -1073,31 +1113,12 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	var root common.Uint256
 	var treeSize uint32
 	var blockheight uint32
-	if offChainMode {
-		MTlock.RLock()
-		root = DefMerkleTree.Root()
-		treeSize = DefMerkleTree.TreeSize()
-		MTlock.RUnlock()
-	} else {
-		for {
-			callCount := 0
-			DefVerifyTx, err = contractVerifyTransaction(DefSdk)
-			if err != nil {
-				return responsePack(INVALID_PARAM, nil)
-			}
 
-			root, treeSize, _, err = invokeWasmContract(DefSdk, DefVerifyTx)
-			callCount++
-			if err != nil {
-				if callCount > 3 {
-					log.Infof("call contract failed %s", err)
-					return responsePack(NODE_OUTSERVICE, nil)
-				}
-				continue
-			}
-			break
-		}
-	}
+	MTlock.RLock()
+	root = DefMerkleTree.Root()
+	treeSize = DefMerkleTree.TreeSize()
+	blockheight, err = getRootBlockHeight(DefStore, root)
+	MTlock.RUnlock()
 
 	proof, index, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
 	if err != nil {
@@ -1105,9 +1126,6 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 		return responsePack(VERIFY_FAILED, nil)
 	}
 
-	MTlock.RLock()
-	blockheight, err = getRootBlockHeight(DefStore, root)
-	MTlock.RUnlock()
 	if err != nil {
 		log.Debugf("get blockheight failed, %s", err)
 		return responsePack(VERIFY_FAILED, nil)
@@ -1213,6 +1231,7 @@ func waitToExit(ctx *cli.Context) {
 			log.Info("Now exit")
 
 			MTlock.Lock()
+			Existlock.Lock()
 			var batchstore leveldbstore.LevelDBStore
 			batchstore = *DefStore
 			batchstore.NewBatch()
@@ -1223,7 +1242,8 @@ func waitToExit(ctx *cli.Context) {
 				log.Errorf("%s", err)
 			}
 			log.Info("save data ok")
-			MTlock.Unlock()
+			//Existlock.Unlock()
+			//MTlock.Unlock()
 
 			DefStore.Close()
 			close(exit)
