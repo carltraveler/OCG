@@ -66,6 +66,8 @@ type ServerConfig struct {
 	OntNode         string   `json:"ontnode"`
 	SignerAddress   string   `json:"signeraddress"`
 	ServerPort      int      `json:"serverport"`
+	GasPrice        uint64   `json:"gasprice"`
+	CacheTime       uint32   `json:"cachetime"`
 	ContracthexAddr string   `json:"contracthexaddr"`
 	Authorize       []string `json:"authorize"`
 }
@@ -382,7 +384,7 @@ func constructTransation(ontSdk *sdk.OntologySdk, leafv []common.Uint256) (*type
 }
 
 func getTxWithArgs(ontSdk *sdk.OntologySdk, args []interface{}) (*types.MutableTransaction, error) {
-	tx, err := utils2.NewWasmVMInvokeTransaction(0, 8000000, contractAddress, args)
+	tx, err := utils2.NewWasmVMInvokeTransaction(DefConfig.GasPrice, 8000000, contractAddress, args)
 	if err != nil {
 		return nil, fmt.Errorf("create tx failed: %s", err)
 	}
@@ -505,6 +507,8 @@ func cacheLeafs() {
 	var leafsCache []common.Uint256
 	leafsCache = make([]common.Uint256, 0)
 
+	seconds := time.Duration(DefConfig.CacheTime)
+
 	for {
 		select {
 		case <-cacheExitCh:
@@ -514,7 +518,7 @@ func cacheLeafs() {
 		case t := <-cacheChannel:
 			leafsCache = append(leafsCache, t.Leafs...)
 			leafsCache = runleafs(leafsCache, false)
-		case <-time.After(time.Second * 10):
+		case <-time.After(time.Second * seconds):
 			leafsCache = runleafs(leafsCache, true)
 		}
 	}
@@ -953,6 +957,9 @@ func initConfig(ctx *cli.Context) error {
 			return err
 		}
 		log.Debugf("%v", &DefConfig)
+		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 {
+			return errors.New("config not set ok")
+		}
 		return nil
 	}
 

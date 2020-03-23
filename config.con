@@ -3,6 +3,8 @@
 	"ontnode": "http://localhost:20336",
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
+	"gasprice": 500,
+	"cachetime": 10,
 	"contracthexaddr": "5973ac37b4084c4027345c2c828c41f831f2e991",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }
