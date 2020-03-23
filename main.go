@@ -1043,24 +1043,24 @@ func convertParamsToLeafs(params []string) ([]common.Uint256, error) {
 
 func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	if len(vargs.Hashes) != 1 {
-		return responsePack(INVALID_PARAM, "")
+		return responsePack(INVALID_PARAM, nil)
 	}
 
 	pubkey, _, err := getPublicSigData(vargs.PubKey, "")
 	if err != nil {
 		log.Infof("%s", err)
-		return responsePack(INVALID_PARAM, "")
+		return responsePack(INVALID_PARAM, nil)
 	}
 
 	address := types.AddressFromPubKey(pubkey)
 	if !checkAuthorizeOfAddress(address) {
-		return responsePack(NO_AUTH, "")
+		return responsePack(NO_AUTH, nil)
 	}
 
 	leaf, err := HashFromHexString(vargs.Hashes[0])
 	if err != nil {
 		log.Infof("Verify convert params err: %s\n", err)
-		return responsePack(INVALID_PARAM, "")
+		return responsePack(INVALID_PARAM, nil)
 	}
 
 	var root common.Uint256
@@ -1076,7 +1076,7 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 			callCount := 0
 			DefVerifyTx, err = contractVerifyTransaction(DefSdk)
 			if err != nil {
-				return responsePack(INVALID_PARAM, "")
+				return responsePack(INVALID_PARAM, nil)
 			}
 
 			root, treeSize, _, err = invokeWasmContract(DefSdk, DefVerifyTx)
@@ -1084,7 +1084,7 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 			if err != nil {
 				if callCount > 3 {
 					log.Infof("call contract failed %s", err)
-					return responsePack(NODE_OUTSERVICE, "")
+					return responsePack(NODE_OUTSERVICE, nil)
 				}
 				continue
 			}
@@ -1095,7 +1095,7 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	proof, index, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
 	if err != nil {
 		log.Debugf("verify failed %s", err)
-		return responsePack(VERIFY_FAILED, "")
+		return responsePack(VERIFY_FAILED, nil)
 	}
 
 	MTlock.RLock()
@@ -1103,7 +1103,7 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	MTlock.RUnlock()
 	if err != nil {
 		log.Debugf("get blockheight failed, %s", err)
-		return responsePack(VERIFY_FAILED, "")
+		return responsePack(VERIFY_FAILED, nil)
 	}
 	res := VerifyResult{
 		Root:        root,
