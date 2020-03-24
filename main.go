@@ -86,6 +86,8 @@ const (
 	NO_AUTH         int64 = 41005
 )
 
+const TxExecFailed uint32 = 1
+
 var ErrMap = map[int64]string{
 	SUCCESS:         "SUCCESS",
 	INVALID_PARAM:   "INVALID_PARAM",
@@ -444,7 +446,7 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 	// tx have send before. so can get event with nil.
 	if err == nil && events0 != nil && events0.TxHash == txHash.ToHexString() {
 		if events0.State == 0 {
-			return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
+			return nil, TxExecFailed, fmt.Errorf("error in events.State is 0 failed.\n")
 		}
 
 		blockheight, err := ontSdk.GetBlockHeightByTxHash(txHash.ToHexString())
@@ -460,7 +462,7 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 	}
 
 	log.Infof("tx hash : %s", txHash.ToHexString())
-
+	time.Sleep(time.Second)
 	_, err = ontSdk.WaitForGenerateBlock(30 * time.Second)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
@@ -486,7 +488,7 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 
 	// here Transaction success.
 	if events.State == 0 {
-		return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
+		return nil, TxExecFailed, fmt.Errorf("error in events.State is 0 failed.\n")
 	}
 
 	return events, blockheight, nil
@@ -500,7 +502,10 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 	for {
 		events, blockheight, err = invokeWasmContractGetEvent(ontSdk, tx)
 		if err != nil {
-			if call_count < DefConfig.CallRetryTimes {
+			if call_count < DefConfig.CallRetryTimes && blockheight != TxExecFailed {
+				if call_count%10 == 0 {
+					log.Infof("call contract failed. node : %s", err)
+				}
 				call_count++
 				continue
 			}
@@ -826,7 +831,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 			log.Info("call contract failed. need handled by manual to check the ontology node issue.")
 			Existlock.Lock()
 			// if contruct new tx failed. just save for restart try. txhash all already failed onchain.
-			if blockheight == 1 {
+			if blockheight == TxExecFailed {
 				log.Infof("old tx exec failed. may your ong not enough. change it. than restart server later")
 				newtx, err := constructTransation(DefSdk, leafv)
 				if err != nil {
