@@ -471,6 +471,10 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 		return nil, 0, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
 	}
 
+	if events == nil {
+		return nil, 0, fmt.Errorf("empty tx events")
+	}
+
 	if events.TxHash != txHash.ToHexString() {
 		return nil, 0, fmt.Errorf("get event acctual failed.")
 	}
