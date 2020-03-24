@@ -52,7 +52,6 @@ const (
 const (
 	levelDBName       string = "leveldb"
 	fileHashStoreName string = "filestore.db"
-	DefMaxBatchNum    uint32 = 256
 	TxchCap           uint32 = 5000
 )
 
@@ -73,6 +72,7 @@ type ServerConfig struct {
 	GasPrice        uint64   `json:"gasprice"`
 	CallRetryTimes  uint32   `json:"callretrytimes"`
 	CacheTime       uint32   `json:"cachetime"`
+	BatchNum        uint32   `json:"batchnum"`
 	ContracthexAddr string   `json:"contracthexaddr"`
 	Authorize       []string `json:"authorize"`
 }
@@ -1036,11 +1036,6 @@ var (
 		Name:  "offchain",
 		Usage: "set offchain test mode",
 	}
-	MaxBatchNumFlag = cli.UintFlag{
-		Name:  "maxbatchnum,b",
-		Usage: "set the batch num",
-		Value: uint(DefMaxBatchNum),
-	}
 )
 
 func setupAPP() *cli.App {
@@ -1054,7 +1049,6 @@ func setupAPP() *cli.App {
 		ConfigFlag,
 		LogLevelFlag,
 		OffChainFlag,
-		MaxBatchNumFlag,
 	}
 	app.Before = func(context *cli.Context) error {
 		runtime.GOMAXPROCS(runtime.NumCPU())
@@ -1081,9 +1075,11 @@ func initConfig(ctx *cli.Context) error {
 			return err
 		}
 		log.Debugf("%v", &DefConfig)
-		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 {
+		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 {
 			return errors.New("config not set ok")
 		}
+
+		maxBatchNum = DefConfig.BatchNum
 		return nil
 	}
 
@@ -1094,9 +1090,7 @@ func startOGQServer(ctx *cli.Context) error {
 	LogLevel := ctx.Uint(utils.GetFlagName(LogLevelFlag))
 	log.InitLog(int(LogLevel), log.PATH, log.Stdout)
 
-	maxBatchNum = uint32(ctx.Uint(utils.GetFlagName(MaxBatchNumFlag)))
 	offChainMode = ctx.GlobalBool(utils.GetFlagName(OffChainFlag))
-	log.Infof("maxBatchNum : %d", maxBatchNum)
 	log.Infof("offChainMode : %v", offChainMode)
 	NeedCheckLatestFailedTx = true
 
