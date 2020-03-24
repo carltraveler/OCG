@@ -778,6 +778,7 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 				panic("latest tx anlyze failed")
 			}
 		}
+		delLatestFailedTx(&store)
 		NeedCheckLatestFailedTx = false
 	}
 
