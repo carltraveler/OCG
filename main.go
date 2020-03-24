@@ -61,6 +61,8 @@ var (
 	offChainMode            bool
 	contractAddress         common.Address
 	NeedCheckLatestFailedTx bool
+	LatestFailedTx          *types.MutableTransaction
+	LatestLeafv             []common.Uint256
 )
 
 type ServerConfig struct {
@@ -69,6 +71,7 @@ type ServerConfig struct {
 	SignerAddress   string   `json:"signeraddress"`
 	ServerPort      int      `json:"serverport"`
 	GasPrice        uint64   `json:"gasprice"`
+	CallRetryTimes  uint32   `json:"callretrytimes"`
 	CacheTime       uint32   `json:"cachetime"`
 	ContracthexAddr string   `json:"contracthexaddr"`
 	Authorize       []string `json:"authorize"`
@@ -260,6 +263,11 @@ func InitCompactMerkleTree() error {
 	raw, err := DefStore.Get(GetKeyByHash(PREFIX_TX_HASH, merkle.EMPTY_HASH))
 	if err == nil {
 		TxStore.UnMarshal(raw)
+	}
+
+	err = initLatestFailedTx()
+	if err != nil {
+		return err
 	}
 
 	DefSdk = sdk.NewOntologySdk()
@@ -480,11 +488,11 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 	var events *sdkcom.SmartContactEvent
 	var blockheight uint32
 	var err error
-	call_count := 0
+	call_count := uint32(0)
 	for {
 		events, blockheight, err = invokeWasmContractGetEvent(ontSdk, tx)
 		if err != nil {
-			if call_count < 3 {
+			if call_count < DefConfig.CallRetryTimes {
 				call_count++
 				continue
 			}
@@ -752,6 +760,33 @@ func handleStoreRequest() {
 	}
 }
 
+func initLatestFailedTx() error {
+	var store leveldbstore.LevelDBStore
+	store = *DefStore
+	store.NewBatch()
+	LatestFailedTx = nil
+	LatestLeafv = nil
+	var err error
+	ltx, _ := getLatestFailedTx(&store)
+	if ltx != nil {
+		LatestFailedTx = ltx
+		LatestLeafv, err = leafvFromTx(LatestFailedTx)
+		for i, l := range LatestLeafv {
+			log.Debugf("LatestFailedTx[%d]: %x", i, l)
+		}
+		if err != nil {
+			return errors.New("latest tx Deserialization failed. check.")
+		}
+		delLatestFailedTx(&store)
+		err = store.BatchCommit()
+		if err != nil {
+			return errors.New("init failed batch commit failed")
+		}
+	}
+
+	return nil
+}
+
 func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore, leafv []common.Uint256, tx *types.MutableTransaction) {
 	MTlock.Lock()
 	defer MTlock.Unlock()
@@ -766,18 +801,11 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 	}
 
 	if NeedCheckLatestFailedTx {
-		ltx, _ := getLatestFailedTx(&store)
-		if ltx != nil {
-			oldtx := tx
-			oldleavf := leafv
-			tx = ltx
-			leafv, err = leafvFromTx(tx)
-			if err != nil {
-				tx = oldtx
-				leafv = oldleavf
-				panic("latest tx anlyze failed")
-			}
-			delLatestFailedTx(&store)
+		if LatestFailedTx != nil {
+			tx = LatestFailedTx
+			leafv = LatestLeafv
+			LatestFailedTx = nil
+			LatestLeafv = nil
 		}
 		NeedCheckLatestFailedTx = false
 	}
