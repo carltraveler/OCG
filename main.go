@@ -481,12 +481,8 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 	}
 
 	// here Transaction success.
-	if events.State == 0 && events.TxHash == txHash.ToHexString() {
-		if events.TxHash == txHash.ToHexString() {
-			return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
-		} else {
-			return nil, 0, fmt.Errorf("get event acctual failed.")
-		}
+	if events.State == 0 {
+		return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
 	}
 
 	return events, blockheight, nil
