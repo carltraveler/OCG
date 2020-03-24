@@ -478,7 +478,7 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 
 	// here Transaction success.
 	if events.State == 0 {
-		return nil, 0, fmt.Errorf("error in events.State is 0 failed.\n")
+		return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
 	}
 
 	return events, blockheight, nil
