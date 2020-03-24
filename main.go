@@ -471,6 +471,10 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 		return nil, 0, fmt.Errorf("error in GetSmartContractEvent:%s\n", err)
 	}
 
+	if events.TxHash != txHash.ToHexString() {
+		return nil, 0, fmt.Errorf("get event acctual failed.")
+	}
+
 	blockheight, err := ontSdk.GetBlockHeightByTxHash(txHash.ToHexString())
 	if err != nil {
 		return nil, 0, fmt.Errorf("error in  GetBlockHeightByTxHash:%s\n", err)
