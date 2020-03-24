@@ -840,11 +840,6 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 			// some kind is. if the tx success. invoke failed. so invoke again when restart to check first must. because the append seq must be same with onchain.
 			// and if failed. construct newtx to check. last failed tx if exec success.
 			log.Infof("your ontology node happens error. need stop program to check your node. and then restart the program. call contract failed %s.", err)
-			if tx == LatestFailedTx {
-				delLatestFailedTx(&store)
-				LatestFailedTx = nil
-				LatestLeafv = nil
-			}
 			putLatestFailedTx(&store, tx)
 			TxStore.UpdateSelfToStore(&store)
 			SaveCompactMerkleTree(DefMerkleTree, &store)
@@ -886,6 +881,12 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 
 	t := merkle.NewTree(tmpTree.TreeSize(), tmpTree.Hashes(), FileHashStore)
 	SaveCompactMerkleTree(t, &store)
+	// must del after commit to chain. if del in init. ctrl+c too early will drop the tx.
+	if tx == LatestFailedTx {
+		delLatestFailedTx(&store)
+		LatestFailedTx = nil
+		LatestLeafv = nil
+	}
 
 	err = store.BatchCommit()
 	if err != nil {
