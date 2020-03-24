@@ -462,7 +462,6 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 	}
 
 	log.Infof("tx hash : %s", txHash.ToHexString())
-	time.Sleep(time.Second)
 	_, err = ontSdk.WaitForGenerateBlock(30 * time.Second)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error in WaitForGenerateBlock:%s\n", err)
@@ -503,6 +502,7 @@ func invokeWasmContract(ontSdk *sdk.OntologySdk, tx *types.MutableTransaction) (
 		events, blockheight, err = invokeWasmContractGetEvent(ontSdk, tx)
 		if err != nil {
 			if call_count < DefConfig.CallRetryTimes && blockheight != TxExecFailed {
+				time.Sleep(time.Second)
 				if call_count%10 == 0 {
 					log.Infof("call contract failed. node : %s", err)
 				}
