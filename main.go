@@ -763,7 +763,7 @@ func handleStoreRequest() {
 func initLatestFailedTx() error {
 	var store leveldbstore.LevelDBStore
 	store = *DefStore
-	store.NewBatch()
+	//store.NewBatch()
 	LatestFailedTx = nil
 	LatestLeafv = nil
 	var err error
@@ -771,16 +771,11 @@ func initLatestFailedTx() error {
 	if ltx != nil {
 		LatestFailedTx = ltx
 		LatestLeafv, err = leafvFromTx(LatestFailedTx)
-		for i, l := range LatestLeafv {
-			log.Debugf("LatestFailedTx[%d]: %x", i, l)
-		}
 		if err != nil {
 			return errors.New("latest tx Deserialization failed. check.")
 		}
-		delLatestFailedTx(&store)
-		err = store.BatchCommit()
-		if err != nil {
-			return errors.New("init failed batch commit failed")
+		for i, l := range LatestLeafv {
+			log.Debugf("LatestFailedTx[%d]: %x", i, l)
 		}
 	}
 
@@ -804,8 +799,6 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 		if LatestFailedTx != nil {
 			tx = LatestFailedTx
 			leafv = LatestLeafv
-			LatestFailedTx = nil
-			LatestLeafv = nil
 		}
 		NeedCheckLatestFailedTx = false
 	}
@@ -847,6 +840,11 @@ func addLeafsToStorage(ontSdk *sdk.OntologySdk, store leveldbstore.LevelDBStore,
 			// some kind is. if the tx success. invoke failed. so invoke again when restart to check first must. because the append seq must be same with onchain.
 			// and if failed. construct newtx to check. last failed tx if exec success.
 			log.Infof("your ontology node happens error. need stop program to check your node. and then restart the program. call contract failed %s.", err)
+			if tx == LatestFailedTx {
+				delLatestFailedTx(&store)
+				LatestFailedTx = nil
+				LatestLeafv = nil
+			}
 			putLatestFailedTx(&store, tx)
 			TxStore.UpdateSelfToStore(&store)
 			SaveCompactMerkleTree(DefMerkleTree, &store)

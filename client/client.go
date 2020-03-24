@@ -195,7 +195,7 @@ func main() {
 			//alladdargs[m] = addArgs
 			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
 
-			verify := false
+			verify := true
 			if !verify {
 				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 				if err != nil {
