@@ -4,7 +4,7 @@
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
 	"gasprice": 500,
-	"callretrytimes": 20,
+	"callretrytimes": 100000,
 	"cachetime": 10,
 	"batchnum": 256,
 	"contracthexaddr": "c0377ed4395af6aae32033febe63102e8cd3017b",
