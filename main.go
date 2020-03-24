@@ -442,7 +442,7 @@ func invokeWasmContractGetEvent(ontSdk *sdk.OntologySdk, tx *types.MutableTransa
 	txHash := tx.Hash()
 	events0, err := ontSdk.GetSmartContractEvent(txHash.ToHexString())
 	// tx have send before. so can get event with nil.
-	if err == nil && events0 != nil {
+	if err == nil && events0 != nil && events0.TxHash == txHash.ToHexString() {
 		if events0.State == 0 {
 			return nil, 1, fmt.Errorf("error in events.State is 0 failed.\n")
 		}
