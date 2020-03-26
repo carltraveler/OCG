@@ -94,7 +94,6 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (inte
 	if err != nil {
 		return nil, fmt.Errorf("JsonRpcRequest json.Marsha error:%s", err)
 	}
-	//fmt.Printf("request: \n%s\n", data)
 	resp, err := this.httpClient.Post(this.addr, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("http post request:%s error:%s", data, err)
@@ -107,7 +106,6 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (inte
 	}
 
 	if method == "batchAdd" {
-		//fmt.Printf("response:\n%s", string(body))
 		rpcRsp := &JsonRpcBatchAddResponse{}
 		err = json.Unmarshal(body, rpcRsp)
 		if err != nil {
@@ -119,9 +117,8 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (inte
 
 		return nil, nil
 	} else if method == "verify" {
-		fmt.Printf("response:\n%s", string(body))
+		//fmt.Printf("response:\n%s", string(body))
 		rpcRsp := &JsonRpcVerifyResponse{}
-		fmt.Printf("%v\n", rpcRsp)
 		err = json.Unmarshal(body, rpcRsp)
 		if rpcRsp.Error != 0 {
 			return nil, fmt.Errorf("JsonRpcResponse error code:%d desc:%s", rpcRsp.Error, rpcRsp.Desc)
@@ -132,13 +129,8 @@ func (this *RpcClient) sendRpcRequest(qid, method string, params RpcParam) (inte
 	return nil, errors.New("error method")
 }
 
-var (
-	N uint32 = 255
-)
-
 func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 	for i := uint32(0); i < uint32(len(leafs)); i++ {
-		fmt.Printf("enter verify")
 		vargs := getVerifyArgs(leafs[i])
 		res, err := client.sendRpcRequest(client.GetNextQid(), "verify", vargs)
 		if err != nil {
@@ -156,9 +148,15 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 				panic(err)
 			}
 		}
-		fmt.Printf("success")
+		fmt.Printf("success\n")
 	}
 }
+
+var (
+	N        uint32 = 256
+	numbatch uint32 = 2000
+	verify   bool   = false
+)
 
 func main() {
 	defer clean()
@@ -168,48 +166,26 @@ func main() {
 	}
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
-	if true {
-		numbatch := uint32(1000)
-		tree := MerkleInit()
-		//var alladdargs []string
-		//alladdargs := make([]string, numbatch, numbatch)
 
-		fmt.Printf("prepare args\n")
-		for m := uint32(0); m < numbatch; m++ {
-			if m%1000 == 0 {
-				fmt.Printf("send %d\n", m)
-			}
-			var leafs []common.Uint256
-			//var root []common.Uint256
-			leafs = GenerateLeafv(uint32(0)+N*m, N)
-			//if m == numbatch-1 {
-			//printLeafs("leafs", leafs)
-			//}
-			//root = getleafvroot(leafs, tree, false)
-			//printLeafs("root", root)
-			//tree.AppendHash(leafs[i])
-			//leafvToAddArgs(leafs)
-			addArgs := leafvToAddArgs(leafs)
-			//generateConArgs(leafs)
-			//alladdargs = append(alladdargs, addArgs)
-			//alladdargs[m] = addArgs
-			//res, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", []interface{}{alladdargs[m]})
-
-			verify := true
-			if !verify {
-				_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
-				if err != nil {
-					fmt.Printf("Add Error: %s\n", err)
-					panic("xxxx")
-				}
-			} else {
-				fmt.Printf("%d\n", m)
-				verifyleaf(client, leafs, true)
+	fmt.Printf("prepare args\n")
+	for m := uint32(1000); m < numbatch; m++ {
+		if m%1000 == 0 {
+			fmt.Printf("send %d\n", m)
+		}
+		var leafs []common.Uint256
+		leafs = GenerateLeafv(uint32(0)+N*m, N)
+		addArgs := leafvToAddArgs(leafs)
+		if verify {
+			verifyleaf(client, leafs, true)
+		} else {
+			_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
+			if err != nil {
+				fmt.Printf("Add Error: %s\n", err)
+				panic("xxxx")
 			}
 		}
-		fmt.Printf("prepare args done\n")
-		fmt.Printf("root %x, treeSize %d\n", tree.Root(), tree.TreeSize())
 	}
+	fmt.Printf("prepare args done\n")
 }
 
 func waitToExit() {
@@ -241,24 +217,6 @@ func GenerateLeafv(start uint32, N uint32) []common.Uint256 {
 	}
 
 	return leafs
-}
-
-func MerkleInit() *merkle.CompactMerkleTree {
-	//store, _ := merkle.NewFileHashStore("merkletree.db", 0)
-	tree := merkle.NewTree(0, nil, nil)
-	return tree
-}
-
-func getleafvroot(leafs []common.Uint256, tree *merkle.CompactMerkleTree, needroot bool) []common.Uint256 {
-	root := make([]common.Uint256, 0)
-	for i := range leafs {
-		tree.AppendHash(leafs[i])
-		if needroot {
-			root = append(root, tree.Root())
-		}
-	}
-
-	return root
 }
 
 type RpcParam struct {
@@ -377,11 +335,6 @@ func getVerifyArgs(leaf common.Uint256) RpcParam {
 	leafs := make([]string, 1, 1)
 	leafs[0] = hex.EncodeToString(leaf[:])
 
-	//sigData, err := DefSigner.Sign(leaf[:])
-	//if err != nil {
-	//	panic(err)
-	//}
-
 	vargs := RpcParam{
 		PubKey: hex.EncodeToString(keypair.SerializePublicKey(DefSigner.GetPublicKey())),
 		Hashes: leafs,
@@ -392,12 +345,6 @@ func getVerifyArgs(leaf common.Uint256) RpcParam {
 
 func clean() {
 	os.RemoveAll("merkletree.db")
-}
-
-func printLeafs(prefix string, leafs []common.Uint256) {
-	for i := range leafs {
-		fmt.Printf("%s[%d]: %x\n", prefix, i, leafs[i])
-	}
 }
 
 func HashFromHexString(s string) (common.Uint256, error) {
@@ -430,7 +377,6 @@ func InitSigner() error {
 }
 
 func Verify(vres *VerifyResult, leaf common.Uint256) error {
-	fmt.Printf("%v", vres)
 	verify := merkle.NewMerkleVerifier()
 	err := verify.VerifyLeafHashInclusion(leaf, vres.Index, vres.Proof, vres.Root, vres.TreeSize)
 	if err != nil {

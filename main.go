@@ -715,8 +715,8 @@ type cacheCh struct {
 }
 
 var (
-	cacheChannel = make(chan cacheCh, 100)
-	cacheExitCh  = make(chan bool)
+	cacheChannel     = make(chan cacheCh)
+	cacheQuitChannel = make(chan bool)
 )
 
 func runleafs(leafsCache []common.Uint256, clean bool) []common.Uint256 {
@@ -754,10 +754,11 @@ func cacheLeafs() {
 
 	for {
 		select {
-		case <-cacheExitCh:
-			log.Info("cacheLeafs get quit signal")
-			leafsCache = runleafs(leafsCache, true)
-			return
+		case <-cacheQuitChannel:
+			if SystemOutOfService {
+				leafsCache = runleafs(leafsCache, true)
+				return
+			}
 		case t := <-cacheChannel:
 			leafsCache = append(leafsCache, t.Leafs...)
 			leafsCache = runleafs(leafsCache, false)
@@ -1350,8 +1351,7 @@ func waitToExit(ctx *cli.Context) {
 		for sig := range sc {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
 			SystemOutOfService = true
-			cacheExitCh <- true
-
+			cacheQuitChannel <- true
 			wg.Wait()
 			log.Info("Now exit")
 
