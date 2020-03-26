@@ -1075,10 +1075,6 @@ var (
 		Usage: "set the log levela.",
 		Value: log.InfoLog,
 	}
-	OffChainFlag = cli.BoolFlag{
-		Name:  "offchain",
-		Usage: "set offchain test mode",
-	}
 )
 
 func setupAPP() *cli.App {
@@ -1091,7 +1087,6 @@ func setupAPP() *cli.App {
 	app.Flags = []cli.Flag{
 		ConfigFlag,
 		LogLevelFlag,
-		OffChainFlag,
 	}
 	app.Before = func(context *cli.Context) error {
 		runtime.GOMAXPROCS(runtime.NumCPU())
