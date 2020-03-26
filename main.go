@@ -69,7 +69,6 @@ type ServerConfig struct {
 	SignerAddress    string   `json:"signeraddress"`
 	ServerPort       int      `json:"serverport"`
 	GasPrice         uint64   `json:"gasprice"`
-	CallRetryTimes   uint32   `json:"callretrytimes"`
 	CacheTime        uint32   `json:"cachetime"`
 	BatchNum         uint32   `json:"batchnum"`
 	TryChainInterval uint32   `json:"trychaininterval"`
@@ -1119,7 +1118,7 @@ func initConfig(ctx *cli.Context) error {
 			return err
 		}
 		log.Debugf("%v", &DefConfig)
-		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 || DefConfig.CallRetryTimes == 0 || DefConfig.SendTxInterval == 0 || DefConfig.TryChainInterval == 0 {
+		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 || DefConfig.SendTxInterval == 0 || DefConfig.TryChainInterval == 0 {
 			return errors.New("config not set ok")
 		}
 

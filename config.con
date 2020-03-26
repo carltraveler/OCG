@@ -4,11 +4,10 @@
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
 	"gasprice": 500,
-	"callretrytimes": 100000,
 	"cachetime": 10,
 	"batchnum": 256,
-	"trychaininterval": 2,
-	"sendtxinterval":2,
+	"trychaininterval": 1,
+	"sendtxinterval":1,
 	"contracthexaddr": "c0377ed4395af6aae32033febe63102e8cd3017b",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

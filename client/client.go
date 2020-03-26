@@ -154,7 +154,7 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 
 var (
 	N        uint32 = 256
-	numbatch uint32 = 2000
+	numbatch uint32 = 2000000
 	verify   bool   = false
 )
 
@@ -168,7 +168,9 @@ func main() {
 	client := NewRpcClient(testUrl)
 
 	fmt.Printf("prepare args\n")
-	for m := uint32(1000); m < numbatch; m++ {
+	k := uint32(0)
+	for m := uint32(2000); m < numbatch; m++ {
+		k++
 		if m%1000 == 0 {
 			fmt.Printf("send %d\n", m)
 		}
@@ -180,7 +182,11 @@ func main() {
 		} else {
 			_, err := client.sendRpcRequest(client.GetNextQid(), "batchAdd", addArgs)
 			if err != nil {
-				fmt.Printf("Add Error: %s\n", err)
+				if k == 0 {
+					fmt.Printf("Add Error: %s, added num: %d\n", err, 0)
+				} else {
+					fmt.Printf("Add Error: %s, added num: %d\n", err, (k-1)*m)
+				}
 				panic("xxxx")
 			}
 		}
