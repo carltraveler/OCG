@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -152,25 +153,18 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 	}
 }
 
-var (
-	N        uint32 = 256
-	numbatch uint32 = 2000000
-	verify   bool   = false
-)
-
-func main() {
-	defer clean()
-	err := InitSigner()
-	if err != nil {
-		panic(err)
-	}
+func sendtx() {
 	testUrl := "http://127.0.0.1:32339"
 	client := NewRpcClient(testUrl)
+	wg.Add(1)
+	defer wg.Done()
 
 	fmt.Printf("prepare args\n")
-	k := uint32(0)
-	for m := uint32(2000); m < numbatch; m++ {
-		k++
+	for ; m < numbatch; m++ {
+		if SystemOut {
+			break
+		}
+
 		if m%1000 == 0 {
 			fmt.Printf("send %d\n", m)
 		}
@@ -189,9 +183,34 @@ func main() {
 				}
 				panic("xxxx")
 			}
+			k++
 		}
 	}
-	fmt.Printf("prepare args done\n")
+
+}
+
+var (
+	k         uint32 = uint32(0)
+	m         uint32 = uint32(3000)
+	wg        sync.WaitGroup
+	SystemOut bool = false
+)
+
+var (
+	N        uint32 = 255
+	numbatch uint32 = 10000
+	verify   bool   = false
+)
+
+func main() {
+	defer clean()
+	err := InitSigner()
+	if err != nil {
+		panic(err)
+	}
+	go sendtx()
+	fmt.Printf("ready to done. use ctrl+c\n")
+	waitToExit()
 }
 
 func waitToExit() {
@@ -200,6 +219,14 @@ func waitToExit() {
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		for sig := range sc {
+			SystemOut = true
+			wg.Wait()
+			if k == 0 {
+				fmt.Printf("added num: %d\n", 0)
+			} else {
+				fmt.Printf("added num: %d\n", (k-1)*m)
+			}
+
 			fmt.Printf("OGQ server received exit signal: %v.", sig.String())
 			close(exit)
 			break
