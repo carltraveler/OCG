@@ -196,7 +196,6 @@ var (
 	DefConfig     ServerConfig
 	DefSigner     sdk.Signer
 	txch          = make(chan transferArg, TxchCap)
-	exitch        = make(chan bool)
 )
 
 func GetKeyByHash(prefix DataPrefix, h common.Uint256) []byte {
@@ -273,6 +272,29 @@ func InitCompactMerkleTree() error {
 
 	DefSdk = sdk.NewOntologySdk()
 	DefSdk.NewRpcClient().SetAddress(DefConfig.OntNode)
+
+	_, err = DefStore.Get(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH))
+	if err != nil {
+		// localHeight not init. first time init.
+		callCount := uint32(0)
+		for {
+			blockHeight, err := DefSdk.GetCurrentBlockHeight()
+			if err != nil || blockHeight == 0 {
+				log.Warnf("blockHeight: %d, err: %s", blockHeight, err)
+				if callCount > 2 {
+					return err
+				}
+				time.Sleep(time.Second * 1)
+				callCount++
+				continue
+			}
+
+			sinkh := common.NewZeroCopySink(nil)
+			sinkh.WriteUint32(blockHeight)
+			DefStore.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
+			break
+		}
+	}
 
 	go cacheLeafs()
 	return nil
@@ -477,167 +499,180 @@ func RoutineOfAddToLocalStorage() {
 
 		blockHeight, err := DefSdk.GetCurrentBlockHeight()
 		if err != nil || blockHeight == 0 {
-			log.Warnf("blockHeight: %d, err: %s", err)
+			log.Warnf("RoutineOfAddToLocalStorage blockHeight: %d, err: %s", blockHeight, err)
 			time.Sleep(time.Second * time.Duration(DefConfig.TryChainInterval))
 			continue
 		}
 
-		if localHeight <= blockHeight {
-			blockevents, err := DefSdk.GetSmartContractEventByBlock(localHeight)
-			if blockevents == nil {
-				log.Warnf("blockevents nil: %v, err: %s", blockevents, err)
-				time.Sleep(time.Second * time.Duration(DefConfig.TryChainInterval))
-				continue
+		if localHeight > blockHeight {
+			time.Sleep(time.Second * time.Duration(DefConfig.TryChainInterval))
+			continue
+		}
+
+		log.Debugf("Local Height: %d, CurrentBlockHeight: %d", localHeight, blockHeight)
+		blockevents, err := DefSdk.GetSmartContractEventByBlock(localHeight)
+		//log.Debugf("RoutineOfAddToLocalStorage blockevents : %v, err: %s", blockevents, err)
+		if err != nil {
+			// may packet drop.
+			time.Sleep(time.Second * time.Duration(DefConfig.TryChainInterval))
+			continue
+		}
+
+		// note all block should ledger to vocal or not. can not partly. if error happend all tx in oneblock to local ledger will drop.
+		addHashes := make([]common.Uint256, 0, 0)
+		var handledMerkleTx bool
+		handledMerkleTx = false
+
+		// each block has a such data. memhashstore tmpTree
+		memhashstore := NewMemHashStore()
+		tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
+
+		for _, event := range blockevents {
+			// in this loop continue will be very carefull. because must coherence with block sequence.
+			txh, err := common.Uint256FromHexString(event.TxHash)
+			if err != nil {
+				log.Warnf("RoutineOfAddToLocalStorage: %s", err)
+				SystemOutOfService = true
+				return
 			}
 
-			// note all block should ledger to vocal or not. can not partly. if error happend all tx in oneblock to local ledger will drop.
-			addHashes := make([]common.Uint256, 0, 0)
+			if TxStore.CheckHashExist(txh) {
+				handledMerkleTx = true
+				// on the oppsite of Add seq. the del publish should be before delTransaction. but not acctually delete from leveldb because this block handle may failed. and need restart to handle if failed. no matter the tx onchain failed or success. this must be delpublish.
+				TxStore.PublishDelHash(txh)
 
-			// each block has a such data. memhashstore tmpTree
-			memhashstore := NewMemHashStore()
-			tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
-
-			for _, event := range blockevents {
-				// in this loop continue will be very carefull. because must coherence with block sequence.
-				txh, err := common.Uint256FromHexString(event.TxHash)
+				newroot, newtreeSize, txExecFailed, err := GetChainRootTreeSize(event)
 				if err != nil {
+					// if err indicates events wrong. consider data loose? try localHeight again.
 					log.Warnf("RoutineOfAddToLocalStorage: %s", err)
 					SystemOutOfService = true
 					return
 				}
 
-				if TxStore.CheckHashExist(txh) {
-					// on the oppsite of Add seq. the del publish should be before delTransaction. but not acctually delete from leveldb because this block handle may failed. and need restart to handle if failed. no matter the tx onchain failed or success. this must be delpublish.
-					TxStore.PublishDelHash(txh)
-
-					newroot, newtreeSize, txExecFailed, err := GetChainRootTreeSize(event)
-					if err != nil {
-						// if err indicates events wrong. consider data loose? try localHeight again.
-						log.Warnf("RoutineOfAddToLocalStorage: %s", err)
-						SystemOutOfService = true
-						return
-					}
-
-					tx, err := getTransaction(&store, txh)
-					if err != nil {
-						// if failed can get from chain. check the program
-						log.Fatalf("RoutineOfAddToLocalStorage: txhash: %x. get tx error. %s", txh, err)
-						SystemOutOfService = true
-						return
-					}
-
-					if tx.Hash() != txh {
-						log.Fatalf("RoutineOfAddToLocalStorage: txhash: %x. not equal . %x", txh, tx.Hash())
-						SystemOutOfService = true
-						return
-					}
-
-					leafv, err := leafvFromTx(tx)
-					if err != nil {
-						// if failed can get from chain. check the program
-						log.Fatalf("RoutineOfAddToLocalStorage: leafvFromTx. %s", err)
-						SystemOutOfService = true
-						return
-					}
-
-					if txExecFailed {
-						newtx, err := constructTransation(DefSdk, leafv)
-						if err != nil {
-							log.Errorf("RoutineOfAddToLocalStorage: constructTransation failed. %s", err)
-							SystemOutOfService = true
-							return
-						}
-
-						err = putTransaction(&store, newtx)
-						if err != nil {
-							log.Errorf("RoutineOfAddToLocalStorage: putTransaction failed. %s", err)
-							SystemOutOfService = true
-							return
-						}
-
-						// delete old tx. delete from txstore map ok. if failed will Unmarshal from leveldbstore.
-						delTransaction(&store, tx.Hash())
-						addHashes = append(addHashes, newtx.Hash())
-						// continue to handle next tx. or blocks
-						continue
-					}
-
-					for i := uint32(0); i < uint32(len(leafv)); i++ {
-						if tmpTree.TreeSize() == math.MaxUint32 {
-							log.Errorf("RoutineOfAddToLocalStorage: Over max the MaxUint32 merkle size.")
-							SystemOutOfService = true
-							return
-						}
-						tmpTree.AppendHash(leafv[i])
-						putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
-					}
-
-					if newroot != tmpTree.Root() || newtreeSize != tmpTree.TreeSize() {
-						SystemOutOfService = true
-						log.Fatalf("RoutineOfAddToLocalStorage: chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), newtreeSize, tmpTree.TreeSize())
-						return
-					}
-
-					putRootBlockHeight(&store, tmpTree.Root(), localHeight)
-					delTransaction(&store, tx.Hash())
-
-					log.Infof("root: %x, treeSize: %d", DefMerkleTree.Root(), DefMerkleTree.TreeSize())
-				}
-			}
-
-			SaveCompactMerkleTree(tmpTree, &store)
-			putCurrentLocalBlockHeight(&store, localHeight+1)
-			TxStore.UpdateSelfToBatch(&store, addHashes)
-
-			// BatchCommit here to commit oneblock localstorage.
-			if !lastFileHashAppendFailed {
-				err = store.BatchCommit()
+				tx, err := getTransaction(&store, txh)
 				if err != nil {
-					log.Errorf("RoutineOfAddToLocalStorage: ledger BatchCommit err, %s", err)
+					// if failed can get from chain. check the program
+					log.Fatalf("RoutineOfAddToLocalStorage: txhash: %x. get tx error. %s", txh, err)
 					SystemOutOfService = true
 					return
 				}
+
+				if tx.Hash() != txh {
+					log.Fatalf("RoutineOfAddToLocalStorage: txhash: %x. not equal . %x", txh, tx.Hash())
+					SystemOutOfService = true
+					return
+				}
+
+				leafv, err := leafvFromTx(tx)
+				if err != nil {
+					// if failed can get from chain. check the program
+					log.Fatalf("RoutineOfAddToLocalStorage: leafvFromTx. %s", err)
+					SystemOutOfService = true
+					return
+				}
+
+				if txExecFailed {
+					newtx, err := constructTransation(DefSdk, leafv)
+					if err != nil {
+						log.Errorf("RoutineOfAddToLocalStorage: constructTransation failed. %s", err)
+						SystemOutOfService = true
+						return
+					}
+
+					err = putTransaction(&store, newtx)
+					if err != nil {
+						log.Errorf("RoutineOfAddToLocalStorage: putTransaction failed. %s", err)
+						SystemOutOfService = true
+						return
+					}
+
+					// delete old tx. delete from txstore map ok. if failed will Unmarshal from leveldbstore.
+					delTransaction(&store, tx.Hash())
+					addHashes = append(addHashes, newtx.Hash())
+					// continue to handle next tx. or blocks
+					continue
+				}
+
+				for i := uint32(0); i < uint32(len(leafv)); i++ {
+					if tmpTree.TreeSize() == math.MaxUint32 {
+						log.Errorf("RoutineOfAddToLocalStorage: Over max the MaxUint32 merkle size.")
+						SystemOutOfService = true
+						return
+					}
+					tmpTree.AppendHash(leafv[i])
+					putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
+				}
+
+				if newroot != tmpTree.Root() || newtreeSize != tmpTree.TreeSize() {
+					SystemOutOfService = true
+					log.Fatalf("RoutineOfAddToLocalStorage: chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), newtreeSize, tmpTree.TreeSize())
+					return
+				}
+
+				putRootBlockHeight(&store, tmpTree.Root(), localHeight)
+				delTransaction(&store, tx.Hash())
+
+				log.Infof("root: %x, treeSize: %d", tmpTree.Root(), tmpTree.TreeSize())
 			}
+		}
 
-			// must after commit success.
-			TxStore.PublishAddHashes(addHashes)
-
-			// update merkle tree. note new merkle tree has save to leveldb. so restart will see this. here acctually to handle FileHashStore.
-			MTlock.Lock()
-			t := merkle.NewTree(tmpTree.TreeSize(), tmpTree.Hashes(), FileHashStore)
-			err = FileHashStore.Append(memhashstore.Hashes)
+		if !handledMerkleTx {
+			sinkh := common.NewZeroCopySink(nil)
+			sinkh.WriteUint32(localHeight + 1)
+			err := store.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
 			if err != nil {
-				// this will cause lose FileHashStore data.
-				log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
-				SystemOutOfService = true
-				// not batchput
-				// this can try to handle this tx gain. but return for safe.
-				lastFileHashAppendFailed = true
-				store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
-				return
+				log.Errorf("RoutineOfAddToLocalStorage: %s", err)
 			}
-
-			err = FileHashStore.Flush()
-			if err != nil {
-				// this will cause lose FileHashStore data.
-				log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
-				SystemOutOfService = true
-				lastFileHashAppendFailed = true
-				store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
-				return
-			}
-			MTlock.Unlock()
-
-			// clear the lastFileHashAppendFailed. here success
-			lastFileHashAppendFailed = false
-			// block handle done. publish the DefMerkleTree to Verify.
-			DefMerkleTree = t
-
-			// continue to handle next block. Current height < chain blockheight. no need wait.
 			continue
 		}
 
-		time.Sleep(time.Second * time.Duration(DefConfig.TryChainInterval))
+		putCurrentLocalBlockHeight(&store, localHeight+1)
+		SaveCompactMerkleTree(tmpTree, &store)
+		TxStore.UpdateSelfToBatch(&store, addHashes)
+
+		// BatchCommit here to commit oneblock localstorage.
+		if !lastFileHashAppendFailed {
+			err = store.BatchCommit()
+			if err != nil {
+				log.Errorf("RoutineOfAddToLocalStorage: ledger BatchCommit err, %s", err)
+				SystemOutOfService = true
+				return
+			}
+		}
+
+		// must after commit success.
+		TxStore.PublishAddHashes(addHashes)
+
+		// update merkle tree. note new merkle tree has save to leveldb. so restart will see this. here acctually to handle FileHashStore.
+		MTlock.Lock()
+		t := merkle.NewTree(tmpTree.TreeSize(), tmpTree.Hashes(), FileHashStore)
+		err = FileHashStore.Append(memhashstore.Hashes)
+		if err != nil {
+			// this will cause lose FileHashStore data.
+			log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
+			SystemOutOfService = true
+			// not batchput
+			// this can try to handle this tx gain. but return for safe.
+			lastFileHashAppendFailed = true
+			store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
+			return
+		}
+
+		err = FileHashStore.Flush()
+		if err != nil {
+			// this will cause lose FileHashStore data.
+			log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
+			SystemOutOfService = true
+			lastFileHashAppendFailed = true
+			store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
+			return
+		}
+		MTlock.Unlock()
+
+		// clear the lastFileHashAppendFailed. here success
+		lastFileHashAppendFailed = false
+		// block handle done. publish the DefMerkleTree to Verify.
+		DefMerkleTree = t
 	}
 }
 
@@ -906,7 +941,7 @@ func RoutineOfSendTx() {
 
 			_, err = DefSdk.SendTransaction(tx)
 			if err != nil {
-				return false
+				return true
 			}
 
 			return true
@@ -922,6 +957,8 @@ func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 
 	log.Debugf("leaf %x index %d\n", leaf_hash, index)
 
+	MTlock.Lock()
+	defer MTlock.Unlock()
 	return cMtree.InclusionProof(index, treeSize)
 }
 
@@ -992,9 +1029,6 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 }
 
 func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, uint32, error) {
-	MTlock.RLock()
-	defer MTlock.RUnlock()
-
 	proof, err := GetProof(cMtree, store, leaf, treeSize)
 	if err != nil {
 		return nil, 0, err
@@ -1084,7 +1118,7 @@ func initConfig(ctx *cli.Context) error {
 			return err
 		}
 		log.Debugf("%v", &DefConfig)
-		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 {
+		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 || DefConfig.CallRetryTimes == 0 || DefConfig.SendTxInterval == 0 || DefConfig.TryChainInterval == 0 {
 			return errors.New("config not set ok")
 		}
 
@@ -1117,6 +1151,9 @@ func startOGQServer(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+
+	go RoutineOfSendTx()
+	go RoutineOfAddToLocalStorage()
 
 	waitToExit(ctx)
 
@@ -1170,6 +1207,10 @@ func convertParamsToLeafs(params []string) ([]common.Uint256, error) {
 }
 
 func rpcVerify(vargs *RpcParam) map[string]interface{} {
+	if SystemOutOfService {
+		return responsePack(NODE_OUTSERVICE, "Out of Service")
+	}
+
 	if len(vargs.Hashes) != 1 {
 		return responsePack(INVALID_PARAM, nil)
 	}
@@ -1245,6 +1286,10 @@ func getPublicSigData(pubs string, sigs string) (keypair.PublicKey, []byte, erro
 }
 
 func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
+	if SystemOutOfService {
+		return responsePack(NODE_OUTSERVICE, "Out of Service")
+	}
+
 	maxBatchNum := DefConfig.BatchNum
 	pubkey, sigData, err := getPublicSigData(addargs.PubKey, addargs.Sigature)
 	if err != nil {
@@ -1304,7 +1349,7 @@ func waitToExit(ctx *cli.Context) {
 	go func() {
 		for sig := range sc {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
-			exitch <- true
+			SystemOutOfService = true
 			cacheExitCh <- true
 
 			wg.Wait()
