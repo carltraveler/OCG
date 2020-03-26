@@ -666,12 +666,12 @@ func RoutineOfAddToLocalStorage() {
 			store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
 			return
 		}
+		DefMerkleTree = t
 		MTlock.Unlock()
 
 		// clear the lastFileHashAppendFailed. here success
 		lastFileHashAppendFailed = false
 		// block handle done. publish the DefMerkleTree to Verify.
-		DefMerkleTree = t
 	}
 }
 
@@ -957,8 +957,8 @@ func GetProof(store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSi
 
 	log.Debugf("leaf %x index %d\n", leaf_hash, index)
 
-	MTlock.Lock()
-	defer MTlock.Unlock()
+	MTlock.RLock()
+	defer MTlock.RUnlock()
 	return DefMerkleTree.InclusionProof(index, treeSize)
 }
 
