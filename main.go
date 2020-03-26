@@ -949,7 +949,7 @@ func RoutineOfSendTx() {
 	}
 }
 
-func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
+func GetProof(store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
 	index, err := getLeafIndex(store, leaf_hash)
 	if err != nil {
 		return nil, err
@@ -959,7 +959,7 @@ func GetProof(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore
 
 	MTlock.Lock()
 	defer MTlock.Unlock()
-	return cMtree.InclusionProof(index, treeSize)
+	return DefMerkleTree.InclusionProof(index, treeSize)
 }
 
 type VerifyResult struct {
@@ -1028,8 +1028,8 @@ func (self *VerifyResult) UnmarshalJSON(buf []byte) error {
 	return nil
 }
 
-func Verify(cMtree *merkle.CompactMerkleTree, store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, uint32, error) {
-	proof, err := GetProof(cMtree, store, leaf, treeSize)
+func Verify(store *leveldbstore.LevelDBStore, leaf common.Uint256, root common.Uint256, treeSize uint32) ([]common.Uint256, uint32, error) {
+	proof, err := GetProof(store, leaf, treeSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1237,7 +1237,7 @@ func rpcVerify(vargs *RpcParam) map[string]interface{} {
 	blockheight, err = getRootBlockHeight(DefStore, root)
 	MTlock.RUnlock()
 
-	proof, index, err := Verify(DefMerkleTree, DefStore, leaf, root, treeSize)
+	proof, index, err := Verify(DefStore, leaf, root, treeSize)
 	if err != nil {
 		log.Debugf("verify failed %s", err)
 		return responsePack(VERIFY_FAILED, nil)
