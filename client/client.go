@@ -191,7 +191,7 @@ func sendtx() {
 
 var (
 	k         uint32 = uint32(0)
-	m         uint32 = uint32(3000)
+	m         uint32 = uint32(0)
 	wg        sync.WaitGroup
 	SystemOut bool = false
 )
@@ -224,7 +224,7 @@ func waitToExit() {
 			if k == 0 {
 				fmt.Printf("added num: %d\n", 0)
 			} else {
-				fmt.Printf("added num: %d\n", (k-1)*m)
+				fmt.Printf("added num: %d\n", (k-1)*N)
 			}
 
 			fmt.Printf("OGQ server received exit signal: %v.", sig.String())
