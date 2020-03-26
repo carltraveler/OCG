@@ -8,6 +8,7 @@
 	"batchnum": 256,
 	"trychaininterval": 1,
 	"sendtxinterval":1,
+	"sendtxsize":50,
 	"contracthexaddr": "c0377ed4395af6aae32033febe63102e8cd3017b",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

@@ -16,6 +16,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -73,6 +74,7 @@ type ServerConfig struct {
 	BatchNum         uint32   `json:"batchnum"`
 	TryChainInterval uint32   `json:"trychaininterval"`
 	SendTxInterval   uint32   `json:"sendtxinterval"`
+	SendTxSize       uint32   `json:"sendtxsize"`
 	ContracthexAddr  string   `json:"contracthexaddr"`
 	Authorize        []string `json:"authorize"`
 }
@@ -125,20 +127,25 @@ func (self *TransactionStore) CheckHashExist(txh common.Uint256) bool {
 	return true
 }
 
+// use Barrier to publish.
 func (self *TransactionStore) PublishDelHashes(DeleteHashes []common.Uint256) {
 	for _, txh := range DeleteHashes {
 		self.Txhashes.Delete(txh)
 	}
+
+	AtomicSimulationBarrier()
 }
 
 func (self *TransactionStore) PublishDelHash(txh common.Uint256) {
 	self.Txhashes.Delete(txh)
+	AtomicSimulationBarrier()
 }
 
 func (self *TransactionStore) PublishAddHashes(addHashes []common.Uint256) {
 	for _, txh := range addHashes {
 		self.Txhashes.Store(txh, true)
 	}
+	AtomicSimulationBarrier()
 }
 
 // this interface only store addHashes to batch. not publish.
@@ -293,6 +300,11 @@ func InitCompactMerkleTree() error {
 			DefStore.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
 			break
 		}
+	}
+
+	SendTxChannel = make(chan bool, DefConfig.SendTxSize)
+	for i := uint32(0); i < DefConfig.SendTxSize; i++ {
+		SendTxChannel <- true
 	}
 
 	go cacheLeafs()
@@ -536,6 +548,11 @@ func RoutineOfAddToLocalStorage() {
 			}
 
 			if TxStore.CheckHashExist(txh) {
+				select {
+				case SendTxChannel <- true:
+				default:
+				}
+
 				handledMerkleTx = true
 				// on the oppsite of Add seq. the del publish should be before delTransaction. but not acctually delete from leveldb because this block handle may failed. and need restart to handle if failed. no matter the tx onchain failed or success. this must be delpublish.
 				TxStore.PublishDelHash(txh)
@@ -918,6 +935,15 @@ func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
 	return res, nil
 }
 
+func AtomicSimulationBarrier() {
+	var n int32
+	atomic.AddInt32(&n, 1)
+}
+
+var (
+	SendTxChannel chan bool
+)
+
 func RoutineOfSendTx() {
 	for {
 		if SystemOutOfService {
@@ -926,42 +952,56 @@ func RoutineOfSendTx() {
 
 		time.Sleep(time.Second * time.Duration(DefConfig.SendTxInterval))
 
-		var store leveldbstore.LevelDBStore
-		store = *DefStore
-
 		TxStore.Txhashes.Range(func(k, v interface{}) bool {
+			res := SendTxIter(k)
 			if SystemOutOfService {
 				return false
 			}
-
-			txh, ok := k.(common.Uint256)
-			if !ok {
-				log.Errorf("RoutineOfSendTx, sync map key is not hash type")
-				SystemOutOfService = true
-				return false
+			select {
+			case <-SendTxChannel:
+			case <-time.After(time.Second * time.Duration(DefConfig.SendTxInterval)):
 			}
-
-			tx, err := getTransaction(&store, txh)
-			if err != nil {
-				log.Errorf("RoutineOfSendTx: %s", err)
-				SystemOutOfService = true
-				return false
-			}
-			_, err = leafvFromTx(tx)
-			if err != nil {
-				log.Errorf("RoutineOfSendTx: %s", err)
-				SystemOutOfService = true
-				return false
-			}
-
-			_, err = DefSdk.SendTransaction(tx)
-			if err != nil {
-				return true
-			}
-
-			return true
+			return res
 		})
 	}
+}
+
+func SendTxIter(k interface{}) bool {
+	var store leveldbstore.LevelDBStore
+	store = *DefStore
+
+	if SystemOutOfService {
+		return false
+	}
+
+	txh, ok := k.(common.Uint256)
+	if !ok {
+		log.Errorf("RoutineOfSendTx, sync map key is not hash type")
+		SystemOutOfService = true
+		return false
+	}
+
+	AtomicSimulationBarrier()
+
+	tx, err := getTransaction(&store, txh)
+	if err != nil {
+		log.Errorf("RoutineOfSendTx: %s", err)
+		SystemOutOfService = true
+		return false
+	}
+	_, err = leafvFromTx(tx)
+	if err != nil {
+		log.Errorf("RoutineOfSendTx: %s", err)
+		SystemOutOfService = true
+		return false
+	}
+
+	_, err = DefSdk.SendTransaction(tx)
+	if err != nil {
+		return true
+	}
+
+	return true
 }
 
 func GetProof(store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
@@ -1128,7 +1168,7 @@ func initConfig(ctx *cli.Context) error {
 			return err
 		}
 		log.Debugf("%v", &DefConfig)
-		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 || DefConfig.SendTxInterval == 0 || DefConfig.TryChainInterval == 0 {
+		if DefConfig.ServerPort == 0 || DefConfig.CacheTime == 0 || len(DefConfig.Walletname) == 0 || len(DefConfig.SignerAddress) == 0 || len(DefConfig.OntNode) == 0 || len(DefConfig.ContracthexAddr) == 0 || len(DefConfig.Authorize) == 0 || DefConfig.BatchNum == 0 || DefConfig.SendTxInterval == 0 || DefConfig.TryChainInterval == 0 || DefConfig.SendTxSize == 0 {
 			return errors.New("config not set ok")
 		}
 
@@ -1361,6 +1401,7 @@ func waitToExit(ctx *cli.Context) {
 			log.Infof("OGQ server received exit signal: %v.", sig.String())
 			SystemOutOfService = true
 			cacheQuitChannel <- true
+			close(SendTxChannel)
 			wg.Wait()
 			log.Info("Now exit")
 
