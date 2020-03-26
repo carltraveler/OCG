@@ -647,37 +647,15 @@ func RoutineOfAddToLocalStorage() {
 		t := merkle.NewTree(tmpTree.TreeSize(), tmpTree.Hashes(), FileHashStore)
 		err = FileHashStore.Append(memhashstore.Hashes)
 		if err != nil {
-			lastFileHashAppendFailed = true
-			// this will cause lose FileHashStore data.
-			log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
-			SystemOutOfService = true
-			// not batchput
-			// this can try to handle this tx gain. but return for safe.
-			store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
-			sinkh := common.NewZeroCopySink(nil)
-			sinkh.WriteUint32(localHeight)
-			err := store.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
-			if err != nil {
-				log.Errorf("RoutineOfAddToLocalStorage: %s", err)
-			}
+			// restore Current height. not the next. when restart append again.
+			handleFileStoreFailed(err, localHeight)
 			return
 		}
 
 		err = FileHashStore.Flush()
 		if err != nil {
-			SystemOutOfService = true
-			lastFileHashAppendFailed = true
-			// this will cause lose FileHashStore data.
-			log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
-			store.Put(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
-
-			// should retry this block again if failed.
-			sinkh := common.NewZeroCopySink(nil)
-			sinkh.WriteUint32(localHeight)
-			err := store.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
-			if err != nil {
-				log.Errorf("RoutineOfAddToLocalStorage: %s", err)
-			}
+			// restore Current height. not the next. when restart append again.
+			handleFileStoreFailed(err, localHeight)
 			return
 		}
 		DefMerkleTree = t
@@ -687,6 +665,29 @@ func RoutineOfAddToLocalStorage() {
 		lastFileHashAppendFailed = false
 		// block handle done. publish the DefMerkleTree to Verify.
 	}
+}
+
+func handleFileStoreFailed(err error, localHeight uint32) {
+	var store leveldbstore.LevelDBStore
+	store = *DefStore
+	store.NewBatch()
+
+	SystemOutOfService = true
+	lastFileHashAppendFailed = true
+	// this will cause lose FileHashStore data.
+	log.Errorf("RoutineOfAddToLocalStorage: FileHashStore Flush err, %s", err)
+	store.BatchPut(GetKeyByHash(PREFIX_FILEHASH_APPEND_FAILED, merkle.EMPTY_HASH), []byte(fileHashAppendFailed))
+
+	// should retry this block again if failed.
+	sinkh := common.NewZeroCopySink(nil)
+	sinkh.WriteUint32(localHeight)
+	store.BatchPut(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
+
+	err = store.BatchCommit()
+	if err != nil {
+		log.Errorf("RoutineOfAddToLocalStorage: %s", err)
+	}
+	return
 }
 
 func GetChainRootTreeSize(event *sdkcom.SmartContactEvent) (common.Uint256, uint32, bool, error) {
