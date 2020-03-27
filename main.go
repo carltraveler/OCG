@@ -302,7 +302,7 @@ func InitCompactMerkleTree() error {
 	}
 
 	SendTxChannel = make(chan bool, DefConfig.SendTxSize)
-	for i := uint32(0); i < DefConfig.SendTxSize; i++ {
+	for i := uint32(1); i < DefConfig.SendTxSize; i++ {
 		SendTxChannel <- true
 	}
 
