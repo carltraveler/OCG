@@ -784,13 +784,12 @@ func cacheLeafs() {
 	for {
 		select {
 		case <-cacheQuitChannel:
-			if SystemOutOfService {
-				leafsCache = runleafs(leafsCache, true)
-				return
-			}
+			SystemOutOfService = true
+			leafsCache = runleafs(leafsCache, true)
+			return
 		case t := <-cacheChannel:
 			leafsCache = append(leafsCache, t.Leafs...)
-			leafsCache = runleafs(leafsCache, false)
+			leafsCache = runleafs(leafsCache, SystemOutOfService)
 		case <-time.After(time.Second * seconds):
 			leafsCache = runleafs(leafsCache, true)
 		}

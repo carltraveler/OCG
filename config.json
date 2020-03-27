@@ -1,0 +1,15 @@
+{
+	"walletname": "./wallet.dat",
+	"ontnode": "http://localhost:20336",
+	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
+	"serverport": 32339,
+	"gasprice": 0,
+	"cachetime": 10,
+	"batchnum": 256,
+	"trychaininterval": 1,
+	"sendtxinterval":1,
+	"sendtxsize":50,
+	"batchaddsleeptime":0,
+	"contracthexaddr": "a1586ac9d2d3d66cb93a4bb6a7c29291b8fbc1d9",
+	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
+}
