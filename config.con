@@ -9,6 +9,7 @@
 	"trychaininterval": 1,
 	"sendtxinterval":1,
 	"sendtxsize":50,
-	"contracthexaddr": "c0377ed4395af6aae32033febe63102e8cd3017b",
+	"batchaddsleeptime":2,
+	"contracthexaddr": "a1586ac9d2d3d66cb93a4bb6a7c29291b8fbc1d9",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

@@ -65,18 +65,19 @@ var (
 )
 
 type ServerConfig struct {
-	Walletname       string   `json:"walletname"`
-	OntNode          string   `json:"ontnode"`
-	SignerAddress    string   `json:"signeraddress"`
-	ServerPort       int      `json:"serverport"`
-	GasPrice         uint64   `json:"gasprice"`
-	CacheTime        uint32   `json:"cachetime"`
-	BatchNum         uint32   `json:"batchnum"`
-	TryChainInterval uint32   `json:"trychaininterval"`
-	SendTxInterval   uint32   `json:"sendtxinterval"`
-	SendTxSize       uint32   `json:"sendtxsize"`
-	ContracthexAddr  string   `json:"contracthexaddr"`
-	Authorize        []string `json:"authorize"`
+	Walletname        string   `json:"walletname"`
+	OntNode           string   `json:"ontnode"`
+	SignerAddress     string   `json:"signeraddress"`
+	ServerPort        int      `json:"serverport"`
+	GasPrice          uint64   `json:"gasprice"`
+	CacheTime         uint32   `json:"cachetime"`
+	BatchNum          uint32   `json:"batchnum"`
+	TryChainInterval  uint32   `json:"trychaininterval"`
+	SendTxInterval    uint32   `json:"sendtxinterval"`
+	SendTxSize        uint32   `json:"sendtxsize"`
+	BatchAddSleepTime uint32   `json:"batchaddsleeptime"`
+	ContracthexAddr   string   `json:"contracthexaddr"`
+	Authorize         []string `json:"authorize"`
 }
 
 const (
@@ -844,10 +845,6 @@ func RoutineOfBatchAdd(leafv []common.Uint256) error {
 
 	store.NewBatch()
 
-	if uint32(len(leafv)) > DefConfig.BatchNum || uint32(len(leafv)) == 0 {
-		return fmt.Errorf("too much elemet or empty. most %d.", DefConfig.BatchNum)
-	}
-
 	var tx *types.MutableTransaction
 	var err error
 	// only batchnum construct tx
@@ -1344,12 +1341,13 @@ func getPublicSigData(pubs string, sigs string) (keypair.PublicKey, []byte, erro
 	return pubkey, sigData, nil
 }
 
+const maxDeclineNum uint32 = 512
+
 func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
 	if SystemOutOfService {
 		return responsePack(NODE_OUTSERVICE, "Out of Service")
 	}
 
-	maxBatchNum := DefConfig.BatchNum
 	pubkey, sigData, err := getPublicSigData(addargs.PubKey, addargs.Sigature)
 	if err != nil {
 		log.Infof("%s", err)
@@ -1363,8 +1361,8 @@ func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
 
 	params := addargs.Hashes
 
-	if uint32(len(params)) > maxBatchNum || uint32(len(params)) == 0 {
-		log.Errorf("too much elemet. most %d. or empty.", maxBatchNum)
+	if uint32(len(params)) > maxDeclineNum || uint32(len(params)) == 0 {
+		log.Errorf("too much elemet. most %d. or empty.", maxDeclineNum)
 		return responsePack(INVALID_PARAM, "too much or empty hashes")
 	}
 
@@ -1383,6 +1381,10 @@ func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
 	if err != nil {
 		log.Infof("batch add failed %s\n", err)
 		return responsePack(ADDHASH_FAILED, err.Error())
+	}
+
+	if DefConfig.BatchAddSleepTime != 0 {
+		time.Sleep(time.Second * time.Duration(DefConfig.BatchAddSleepTime))
 	}
 
 	return responseSuccess("Cached Success")
