@@ -950,32 +950,44 @@ func RoutineOfSendTx() {
 		time.Sleep(time.Second * time.Duration(DefConfig.SendTxInterval))
 
 		TxStore.Txhashes.Range(func(k, v interface{}) bool {
-			res := SendTxIter(k)
+			res, err := SendTxIter(k)
 			if SystemOutOfService {
 				return false
 			}
+
+			if res && err != nil {
+				log.Warnf("RoutineOfSendTx: %s", err)
+				time.Sleep(time.Second * time.Duration(DefConfig.SendTxInterval))
+			}
+
+			if !res {
+				log.Warnf("RoutineOfSendTx: %s", err)
+				return false
+			}
+
 			select {
 			case <-SendTxChannel:
 			case <-time.After(time.Second * time.Duration(DefConfig.SendTxInterval)):
 			}
-			return res
+
+			return true
 		})
 	}
 }
 
-func SendTxIter(k interface{}) bool {
+func SendTxIter(k interface{}) (bool, error) {
 	var store leveldbstore.LevelDBStore
 	store = *DefStore
 
 	if SystemOutOfService {
-		return false
+		return false, nil
 	}
 
 	txh, ok := k.(common.Uint256)
 	if !ok {
 		log.Errorf("RoutineOfSendTx, sync map key is not hash type")
 		SystemOutOfService = true
-		return false
+		return false, fmt.Errorf("RoutineOfSendTx, sync map key is not hash type")
 	}
 
 	AtomicSimulationBarrier()
@@ -984,21 +996,21 @@ func SendTxIter(k interface{}) bool {
 	if err != nil {
 		log.Errorf("RoutineOfSendTx: %s", err)
 		SystemOutOfService = true
-		return false
+		return false, err
 	}
 	_, err = leafvFromTx(tx)
 	if err != nil {
 		log.Errorf("RoutineOfSendTx: %s", err)
 		SystemOutOfService = true
-		return false
+		return false, err
 	}
 
 	_, err = DefSdk.SendTransaction(tx)
 	if err != nil {
-		return true
+		return true, err
 	}
 
-	return true
+	return true, nil
 }
 
 func GetProof(store *leveldbstore.LevelDBStore, leaf_hash common.Uint256, treeSize uint32) ([]common.Uint256, error) {
