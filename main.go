@@ -116,6 +116,7 @@ func checkAuthorizeOfAddress(address common.Address) bool {
 }
 
 type TransactionStore struct {
+	// sync have mb.
 	Txhashes sync.Map
 }
 
@@ -133,19 +134,16 @@ func (self *TransactionStore) PublishDelHashes(DeleteHashes []common.Uint256) {
 		self.Txhashes.Delete(txh)
 	}
 
-	AtomicSimulationBarrier()
 }
 
 func (self *TransactionStore) PublishDelHash(txh common.Uint256) {
 	self.Txhashes.Delete(txh)
-	AtomicSimulationBarrier()
 }
 
 func (self *TransactionStore) PublishAddHashes(addHashes []common.Uint256) {
 	for _, txh := range addHashes {
 		self.Txhashes.Store(txh, true)
 	}
-	AtomicSimulationBarrier()
 }
 
 // this interface only store addHashes to batch. not publish.
@@ -711,7 +709,6 @@ func GetChainRootTreeSize(event *sdkcom.SmartContactEvent) (common.Uint256, uint
 	if event.State == 0 {
 		log.Warnf("GetChainNotifyByTxHash: Check tx failed. may out of ong. charge your address with ong.")
 		// to stop all other gorouting. and must handled all other tx. in localHeight block. resend the failed tx again(of coures reconstruct the tx.)
-		SystemOutOfService = true
 		return merkle.EMPTY_HASH, 0, true, nil
 	}
 
