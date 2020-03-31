@@ -10,6 +10,6 @@
 	"sendtxinterval":1,
 	"sendtxsize":50,
 	"batchaddsleeptime":0,
-	"contracthexaddr": "a1586ac9d2d3d66cb93a4bb6a7c29291b8fbc1d9",
+	"contracthexaddr": "77fbc7957f5e8f0c9b99318b1ecc9f30a937911a",
 	"authorize":["APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2"]
 }

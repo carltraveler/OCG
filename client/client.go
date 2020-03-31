@@ -155,6 +155,7 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 
 func sendtx() {
 	testUrl := "http://127.0.0.1:32339"
+	//testUrl := "https://attestation.ont.io"
 	client := NewRpcClient(testUrl)
 	wg.Add(1)
 	defer wg.Done()
@@ -191,14 +192,14 @@ func sendtx() {
 
 var (
 	k         uint32 = uint32(0)
-	m         uint32 = uint32(81)
+	m         uint32 = uint32(0)
 	wg        sync.WaitGroup
 	SystemOut bool = false
 )
 
 var (
-	N        uint32 = 256
-	numbatch uint32 = 10000
+	N        uint32 = 512
+	numbatch uint32 = 1000
 	verify   bool   = false
 )
 
