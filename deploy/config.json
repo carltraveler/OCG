@@ -3,7 +3,7 @@
 	"ontnode": "http://localhost:20336",
 	"signeraddress" : "APHNPLz2u1JUXyD8rhryLaoQrW46J3P6y2",
 	"serverport": 32339,
-	"gasprice": 0,
+	"gasprice": 500,
 	"cachetime": 10,
 	"batchnum": 30,
 	"trychaininterval": 2,
