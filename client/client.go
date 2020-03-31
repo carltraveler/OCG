@@ -180,7 +180,7 @@ func sendtx() {
 				if k == 0 {
 					fmt.Printf("Add Error: %s, added num: %d\n", err, 0)
 				} else {
-					fmt.Printf("Add Error: %s, added num: %d\n", err, (k-1)*m)
+					fmt.Printf("Add Error: %s, added num: %d\n", err, k*m)
 				}
 				panic("xxxx")
 			}
@@ -199,7 +199,7 @@ var (
 
 var (
 	N        uint32 = 512
-	numbatch uint32 = 1000
+	numbatch uint32 = 10
 	verify   bool   = false
 )
 
