@@ -296,7 +296,10 @@ func InitCompactMerkleTree() error {
 
 			sinkh := common.NewZeroCopySink(nil)
 			sinkh.WriteUint32(blockHeight)
-			DefStore.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
+			err = DefStore.Put(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH), sinkh.Bytes())
+			if err != nil {
+				return err
+			}
 			break
 		}
 	}
@@ -1414,18 +1417,6 @@ func waitToExit(ctx *cli.Context) {
 			close(SendTxChannel)
 			wg.Wait()
 			log.Info("Now exit")
-
-			var batchstore leveldbstore.LevelDBStore
-			batchstore = *DefStore
-			batchstore.NewBatch()
-			SaveCompactMerkleTree(DefMerkleTree, &batchstore)
-			TxStore.UpdateSelfToBatch(&batchstore, nil)
-			err := batchstore.BatchCommit()
-			if err != nil {
-				log.Errorf("%s", err)
-			}
-			log.Info("save data ok")
-
 			DefStore.Close()
 			close(exit)
 			break
