@@ -49,6 +49,7 @@ const (
 	PREFIX_LATEST_FAILED_TX       DataPrefix = 0x6
 	PREFIX_CURRENT_BLOCKHEIGHT    DataPrefix = 0x7
 	PREFIX_FILEHASH_APPEND_FAILED DataPrefix = 0x8
+	PREFIX_CONTRACT_ADDRESS       DataPrefix = 0x9
 )
 
 const (
@@ -229,7 +230,48 @@ func InitSigner() error {
 	return nil
 }
 
-func InitCompactMerkleTree() error {
+func checkContontractAlreadyUsed(ontSdk *sdk.OntologySdk) error {
+	tx, err := contractVerifyTransaction(ontSdk)
+	if err != nil {
+		return err
+	}
+
+	var result *sdkcom.PreExecResult
+	callCount := uint32(0)
+	for {
+		result, err = ontSdk.ClientMgr.PreExecTransaction(tx)
+		if err != nil {
+			if callCount > 2 {
+				return err
+			}
+			callCount++
+			time.Sleep(time.Second * 1)
+			continue
+		}
+		break
+	}
+	raw, err := result.Result.ToByteArray()
+	if err != nil {
+		return err
+	}
+	source := common.NewZeroCopySource(raw)
+	_, eof := source.NextHash()
+	if eof {
+		return errors.New("checkContontractAlreadyUsed: error decode root hash.")
+	}
+	size, eof := source.NextUint32()
+	if eof {
+		return errors.New("checkContontractAlreadyUsed: error decode root size.")
+	}
+	if size != 0 {
+		return fmt.Errorf("checkContontractAlreadyUsed: chain merkle tree size: %d", size)
+	}
+	log.Debugf("checkContontractAlreadyUsed pass.")
+
+	return nil
+}
+
+func InitCompactMerkleTree(updatecontract bool) error {
 	var err error
 	cMTree := &merkle.CompactMerkleTree{}
 	DefStore, err = leveldbstore.NewLevelDBStore(levelDBName)
@@ -281,7 +323,19 @@ func InitCompactMerkleTree() error {
 	_, err = DefStore.Get(GetKeyByHash(PREFIX_CURRENT_BLOCKHEIGHT, merkle.EMPTY_HASH))
 	if err != nil {
 		// localHeight not init. first time init.
+		log.Info("server first run time. init.")
 		callCount := uint32(0)
+		err = checkContontractAlreadyUsed(DefSdk)
+		if err != nil {
+			return err
+		}
+		// init contractAddress
+		err = DefStore.Put(GetKeyByHash(PREFIX_CONTRACT_ADDRESS, merkle.EMPTY_HASH), contractAddress[:])
+		if err != nil {
+			return err
+		}
+
+		// check the chain contract if already used.
 		for {
 			blockHeight, err := DefSdk.GetCurrentBlockHeight()
 			if err != nil || blockHeight == 0 {
@@ -301,6 +355,25 @@ func InitCompactMerkleTree() error {
 				return err
 			}
 			break
+		}
+	} else {
+		// check contract change restart.
+		if updatecontract {
+			log.Infof("Update the Contract Address in init to %x.", contractAddress)
+			err = DefStore.Put(GetKeyByHash(PREFIX_CONTRACT_ADDRESS, merkle.EMPTY_HASH), contractAddress[:])
+			if err != nil {
+				return err
+			}
+		} else {
+			var tmpContractAddr common.Address
+			addrByte, err := DefStore.Get(GetKeyByHash(PREFIX_CONTRACT_ADDRESS, merkle.EMPTY_HASH))
+			if err != nil {
+				return err
+			}
+			copy(tmpContractAddr[:], addrByte)
+			if tmpContractAddr != contractAddress {
+				return errors.New("Init Error. Can not change contractAddress after restart.")
+			}
 		}
 	}
 
@@ -538,7 +611,11 @@ func RoutineOfAddToLocalStorage() {
 
 		// each block has a such data. memhashstore tmpTree
 		memhashstore := NewMemHashStore()
-		tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), DefMerkleTree.Hashes(), memhashstore)
+		temphashes := make([]common.Uint256, len(DefMerkleTree.Hashes()))
+		for i, h := range DefMerkleTree.Hashes() {
+			temphashes[i] = h
+		}
+		tmpTree := merkle.NewTree(DefMerkleTree.TreeSize(), temphashes, memhashstore)
 
 		for _, event := range blockevents {
 			// in this loop continue will be very carefull. because must coherence with block sequence.
@@ -716,9 +793,22 @@ func GetChainRootTreeSize(event *sdkcom.SmartContactEvent) (common.Uint256, uint
 		return merkle.EMPTY_HASH, 0, true, nil
 	}
 
+	if len(event.Notify) == 0 {
+		return merkle.EMPTY_HASH, 0, false, fmt.Errorf("GetChainNotifyByTxHash: notify should not empty.")
+	}
+
 	var newroot common.Uint256
 	var treeSize uint32
 	var err error
+	txaddr, err := common.AddressFromHexString(event.Notify[0].ContractAddress)
+	if err != nil {
+		return merkle.EMPTY_HASH, 0, false, fmt.Errorf("GetChainNotifyByTxHash: address convert failed %s.", err)
+	}
+
+	if txaddr != contractAddress {
+		return merkle.EMPTY_HASH, 0, false, fmt.Errorf("GetChainNotifyByTxHash: address %x not match address %x.", txaddr, contractAddress)
+	}
+
 	switch val := event.Notify[0].States.(type) {
 	case []interface{}:
 		if len(val) != 2 {
@@ -837,7 +927,7 @@ func ledgerAppendTxRoll(store leveldbstore.LevelDBStore, leafv []common.Uint256)
 	return err
 }
 
-func RoutineOfBatchAdd(leafv []common.Uint256) error {
+func RoutineOfBatchAdd(leafv []common.Uint256) ([]string, error) {
 	var store leveldbstore.LevelDBStore
 	store = *DefStore
 	store.NewBatch()
@@ -854,12 +944,12 @@ func RoutineOfBatchAdd(leafv []common.Uint256) error {
 	if uint32(len(leafv)) == DefConfig.BatchNum {
 		tx, err = constructTransation(DefSdk, leafv)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		err = putTransaction(&store, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// if duplicate will drop batch.
@@ -870,19 +960,24 @@ func RoutineOfBatchAdd(leafv []common.Uint256) error {
 	// only lock the duplicate logic
 	Existlock.Lock()
 	defer Existlock.Unlock()
+	duplicateLeafs := make([]string, 0)
 
 	for i := uint32(0); i < uint32(len(leafv)); i++ {
 		_, err := getLeafIndex(&store, leafv[i])
 		if err == nil {
-			return errors.New("duplicate hash leafs. please check.")
+			duplicateLeafs = append(duplicateLeafs, common.ToHexString(leafv[i][:]))
 		}
 		putLeafIndex(&store, leafv[i], math.MaxUint32)
+	}
+
+	if len(duplicateLeafs) != 0 {
+		return duplicateLeafs, errors.New("duplicate hash leafs. please check.")
 	}
 
 	// this must be lock.
 	err = store.BatchCommit()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// send to cache.
@@ -891,12 +986,12 @@ func RoutineOfBatchAdd(leafv []common.Uint256) error {
 			Leafs: leafv,
 		}
 		cacheChannel <- leafs
-		return nil
+		return nil, nil
 	}
 
 	TxStore.PublishAddHashes(addHashes)
 
-	return nil
+	return nil, nil
 }
 
 func leafvFromTx(tx *types.MutableTransaction) ([]common.Uint256, error) {
@@ -1138,6 +1233,10 @@ var (
 		Usage: "set the log levela.",
 		Value: log.InfoLog,
 	}
+	UpdateContractFlag = cli.BoolFlag{
+		Name:  "updatecontract",
+		Usage: "update the contract address if contract migrate.",
+	}
 )
 
 func setupAPP() *cli.App {
@@ -1150,6 +1249,7 @@ func setupAPP() *cli.App {
 	app.Flags = []cli.Flag{
 		ConfigFlag,
 		LogLevelFlag,
+		UpdateContractFlag,
 	}
 	app.Before = func(context *cli.Context) error {
 		runtime.GOMAXPROCS(runtime.NumCPU())
@@ -1190,6 +1290,9 @@ func startOGQServer(ctx *cli.Context) error {
 	LogLevel := ctx.Uint(utils.GetFlagName(LogLevelFlag))
 	log.InitLog(int(LogLevel), log.PATH, log.Stdout)
 
+	updatecontract := ctx.Bool(utils.GetFlagName(UpdateContractFlag))
+	log.Infof("updatecontract: %v", updatecontract)
+
 	err := initConfig(ctx)
 	if err != nil {
 		return err
@@ -1200,7 +1303,7 @@ func startOGQServer(ctx *cli.Context) error {
 		return err
 	}
 
-	err = InitCompactMerkleTree()
+	err = InitCompactMerkleTree(updatecontract)
 	if err != nil {
 		return err
 	}
@@ -1379,10 +1482,10 @@ func rpcBatchAdd(addargs *RpcParam) map[string]interface{} {
 		return responsePack(NO_AUTH, "Verify failed. sigData not right.")
 	}
 
-	err = RoutineOfBatchAdd(hashes)
+	dup, err := RoutineOfBatchAdd(hashes)
 	if err != nil {
 		log.Infof("batch add failed %s\n", err)
-		return responsePack(ADDHASH_FAILED, err.Error())
+		return responseFailed(ADDHASH_FAILED, err.Error(), dup)
 	}
 
 	if DefConfig.BatchAddSleepTime != 0 {
@@ -1400,6 +1503,15 @@ func responsePack(errcode int64, result interface{}) map[string]interface{} {
 	resp := map[string]interface{}{
 		"error":  errcode,
 		"desc":   ErrMap[errcode],
+		"result": result,
+	}
+	return resp
+}
+
+func responseFailed(errcode int64, errmsg string, result interface{}) map[string]interface{} {
+	resp := map[string]interface{}{
+		"error":  errcode,
+		"desc":   ErrMap[errcode] + ": " + errmsg,
 		"result": result,
 	}
 	return resp
