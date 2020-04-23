@@ -709,7 +709,7 @@ func RoutineOfAddToLocalStorage(correctDatabase uint32) {
 					putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 				}
 
-				log.Info("tx hash, %s, Local Height: %d, CurrentBlockHeight: %d", event.TxHash, localHeight, blockHeight)
+				log.Infof("tx hash, %s, Local Height: %d, CurrentBlockHeight: %d", event.TxHash, localHeight, blockHeight)
 				if newroot != tmpTree.Root() || newtreeSize != tmpTree.TreeSize() {
 					SystemOutOfService = true
 					log.Fatalf("RoutineOfAddToLocalStorage: chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), newtreeSize, tmpTree.TreeSize())
@@ -777,7 +777,7 @@ func RoutineOfAddToLocalStorage(correctDatabase uint32) {
 						putLeafIndex(&store, leafv[i], tmpTree.TreeSize()-1)
 					}
 
-					log.Info("tx hash, %s, Local Height: %d, CurrentBlockHeight: %d", event.TxHash, localHeight, blockHeight)
+					log.Infof("tx hash, %s, Local Height: %d, CurrentBlockHeight: %d", event.TxHash, localHeight, blockHeight)
 					if newroot != tmpTree.Root() || newtreeSize != tmpTree.TreeSize() {
 						SystemOutOfService = true
 						log.Fatalf("RoutineOfAddToLocalStorage: get tx from other server, chainroot: %x, root : %x, chaintreeSize: %d, treeSize: %d", newroot, tmpTree.Root(), newtreeSize, tmpTree.TreeSize())
