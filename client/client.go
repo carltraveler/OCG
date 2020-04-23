@@ -143,20 +143,23 @@ func verifyleaf(client *RpcClient, leafs []common.Uint256, v bool) {
 		if !ok {
 			panic("error type")
 		}
-		if v {
-			err = Verify(vres, leafs[i])
-			if err != nil {
-				panic(err)
-			}
-		}
-		fmt.Printf("success\n")
+		//if v {
+		//	err = Verify(vres, leafs[i])
+		//	if err != nil {
+		//		panic(err)
+		//	}
+		//}
+		fmt.Printf("success %v\n", vres.TreeSize)
 	}
 }
 
 func sendtx() {
 	testUrl := "http://127.0.0.1:32339"
+	//testUrl := "http://127.0.0.1:32338"
+	//testUrl := "http://127.0.0.1:8080"
 	//testUrl := "https://attestation.ont.io"
 	client := NewRpcClient(testUrl)
+	SystemOut = false
 	wg.Add(1)
 	defer wg.Done()
 
@@ -188,18 +191,20 @@ func sendtx() {
 		}
 	}
 
+	fmt.Printf("sendDone.")
+
 }
 
 var (
 	k         uint32 = uint32(0)
 	m         uint32 = uint32(0)
 	wg        sync.WaitGroup
-	SystemOut bool = false
+	SystemOut bool = true
 )
 
 var (
-	N        uint32 = 512
-	numbatch uint32 = 10
+	N        uint32 = 1
+	numbatch uint32 = 100000
 	verify   bool   = false
 )
 
